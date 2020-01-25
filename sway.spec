@@ -1,6 +1,6 @@
 Name:           sway
 Version:        1.2
-Release:        2%{?dist}
+Release:        3%{?dist}
 Summary:        i3-compatible window manager for Wayland
 License:        MIT
 URL:            https://github.com/swaywm/sway
@@ -42,9 +42,8 @@ Recommends:     f%{fedora}-backgrounds-base
 Requires:       xorg-x11-server-Xwayland
 # Sway binds the terminal shortcut to one specific terminal. In our case urxvtc-ml
 Recommends:     rxvt-unicode-256color-ml
-# TODO: needs packaging
 # grim is the recommended way to take screenshots on sway 1.0+
-# Recommends:     grim
+Recommends:     grim
 
 %description
 Sway is a tiling window manager supporting Wayland compositor protocol and
@@ -91,6 +90,9 @@ sed -i "s|^output \* bg .*|output * bg /usr/share/backgrounds/f%{fedora}/default
 %{_datadir}/backgrounds/sway
 
 %changelog
+* Sat Jan 25 2020 Benjamin Lowry <ben@ben.gmbh> 1.2-3
+- Uncomment 'Recommends: grim'
+
 * Wed Sep 11 2019 Ivan Mironov <mironov.ivan@gmail.com> - 1.2-2
 - Add patch to fix easily reproducible crash
 
