@@ -1,32 +1,35 @@
 Name:           sway
-Version:        1.2
-Release:        4%{?dist}
+Version:        1.4
+Release:        1%{?dist}
 Summary:        i3-compatible window manager for Wayland
 License:        MIT
 URL:            https://github.com/swaywm/sway
-Source0:        %{url}/archive/%{version}/%{name}-%{version}.tar.gz
+Source0:        %{url}/releases/download/%{version}/%{name}-%{version}.tar.gz
 
-Patch0001: 0001-layer-shell-don-t-give-focus-to-unmapped-layer-surfa.patch
-
+# FIXME: wlroots require `pkgconfig(egl)`, but assumes mesa provides it
+# (and uses it's extension header `<EGL/eglmesaext.h>).
+# Upstream is working on not needing that: https://github.com/swaywm/wlroots/issues/1899
+# Until it is fixed, pull mesa-libEGL-devel manually
+BuildRequires:  pkgconfig(egl) mesa-libEGL-devel
 BuildRequires:  cmake
 BuildRequires:  gcc-c++
 BuildRequires:  make
-BuildRequires:  meson
+BuildRequires:  meson >= 0.48.0
 BuildRequires:  pam-devel
 BuildRequires:  pkgconfig(cairo)
 BuildRequires:  pkgconfig(dbus-1)
 BuildRequires:  pkgconfig(gdk-pixbuf-2.0)
-BuildRequires:  pkgconfig(json-c)
+BuildRequires:  pkgconfig(json-c) >= 0.13
 BuildRequires:  pkgconfig(libcap)
-BuildRequires:  pkgconfig(libinput)
+BuildRequires:  pkgconfig(libinput) >= 1.6.0
 BuildRequires:  pkgconfig(libpcre)
 BuildRequires:  pkgconfig(pango)
 BuildRequires:  pkgconfig(wayland-client)
 BuildRequires:  pkgconfig(wayland-cursor)
 BuildRequires:  pkgconfig(wayland-egl)
 BuildRequires:  pkgconfig(wayland-server)
-BuildRequires:  pkgconfig(wayland-protocols)
-BuildRequires:  pkgconfig(wlroots) >= 0.7.0
+BuildRequires:  pkgconfig(wayland-protocols) >= 1.14
+BuildRequires:  pkgconfig(wlroots) >= 0.10.0
 BuildRequires:  wayland-devel
 BuildRequires:  libevdev-devel
 BuildRequires:  git
@@ -85,11 +88,15 @@ sed -i "s|^output \* bg .*|output * bg /usr/share/backgrounds/f%{fedora}/default
 %dir %{_datadir}/bash-completion/completions
 %{_datadir}/bash-completion/completions/sway*
 %dir %{_datadir}/fish
-%dir %{_datadir}/fish/completions
-%{_datadir}/fish/completions/sway*
+%dir %{_datadir}/fish/vendor_completions.d
+%{_datadir}/fish/vendor_completions.d/sway*
 %{_datadir}/backgrounds/sway
 
 %changelog
+* Thu Feb 06 2020 Joe Walker <grumpey0@gmail.com> 1.4-1
+- Update to 1.4
+- Added Build requires to pull in mesa-libEGL-devel manually
+
 * Fri Jan 31 2020 Fedora Release Engineering <releng@fedoraproject.org> - 1.2-4
 - Rebuilt for https://fedoraproject.org/wiki/Fedora_32_Mass_Rebuild
 
