@@ -1,12 +1,13 @@
 Name:           sway
 Version:        1.2
-Release:        4%{?dist}
+Release:        5%{?dist}
 Summary:        i3-compatible window manager for Wayland
 License:        MIT
 URL:            https://github.com/swaywm/sway
 Source0:        %{url}/archive/%{version}/%{name}-%{version}.tar.gz
 
 Patch0001: 0001-layer-shell-don-t-give-focus-to-unmapped-layer-surfa.patch
+Patch0002: https://github.com/swaywm/sway/commit/29a5ce5f65d04b046271fbe53850836c77bbee80.patch#/link-with-fno-common.patch
 
 BuildRequires:  cmake
 BuildRequires:  gcc-c++
@@ -90,6 +91,9 @@ sed -i "s|^output \* bg .*|output * bg /usr/share/backgrounds/f%{fedora}/default
 %{_datadir}/backgrounds/sway
 
 %changelog
+* Fri Feb 07 2020 Jan Staněk <jstanek@redhat.com> - 1.2-5
+- Apply upstream patch to allow compiling with -fno-common flag
+
 * Fri Jan 31 2020 Fedora Release Engineering <releng@fedoraproject.org> - 1.2-4
 - Rebuilt for https://fedoraproject.org/wiki/Fedora_32_Mass_Rebuild
 
