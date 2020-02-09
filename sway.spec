@@ -1,11 +1,12 @@
 Name:           sway
 Version:        1.4
-Release:        2%{?dist}
+Release:        3%{?dist}
 Summary:        i3-compatible window manager for Wayland
 License:        MIT
 URL:            https://github.com/swaywm/sway
 Source0:        %{url}/releases/download/%{version}/%{name}-%{version}.tar.gz
 Patch1:         https://github.com/swaywm/sway/commit/29a5ce5f65d04b046271fbe53850836c77bbee80.patch#/link-with-fno-common.patch
+Patch2:         https://github.com/swaywm/sway/pull/4991.patch#/sway.fix-null-strcmp.patch
 
 # FIXME: wlroots require `pkgconfig(egl)`, but assumes mesa provides it
 # (and uses it's extension header `<EGL/eglmesaext.h>).
@@ -94,6 +95,9 @@ sed -i "s|^output \* bg .*|output * bg /usr/share/backgrounds/f%{fedora}/default
 %{_datadir}/backgrounds/sway
 
 %changelog
+* Sun Feb 09 2020 Till Hofmann <thofmann@fedoraproject.org> - 1.4-3
+- Add patch to fix strcmp on nullptr (upstream PR #4991)
+
 * Fri Feb 07 2020 Jan Staněk <jstanek@redhat.com> - 1.4-2
 - Apply upstream patch to allow compiling with -fno-common flag
 
