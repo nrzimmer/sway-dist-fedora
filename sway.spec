@@ -1,6 +1,6 @@
 Name:           sway
 Version:        1.4
-Release:        3%{?dist}
+Release:        4%{?dist}
 Summary:        i3-compatible window manager for Wayland
 License:        MIT
 URL:            https://github.com/swaywm/sway
@@ -41,7 +41,7 @@ Recommends:     dmenu
 
 Requires:       swaybg
 # By default the Fedora background is used
-Recommends:     f%{fedora}-backgrounds-base
+Recommends:     desktop-backgrounds-compat
 
 # dmenu (as well as rxvt any many others) requires XWayland on Sway
 Requires:       xorg-x11-server-Xwayland
@@ -64,9 +64,9 @@ i3-compatible configuration.
 %install
 %meson_install
 # Set default terminal to urxvt256c-ml
-sed -i 's/^set $term urxvt$/set \$term urxvt256c-ml/' %{buildroot}%{_sysconfdir}/sway/config
+sed -i 's/^set $term .*/set \$term urxvt256c-ml/' %{buildroot}%{_sysconfdir}/sway/config
 # Set Fedora background as default background
-sed -i "s|^output \* bg .*|output * bg /usr/share/backgrounds/f%{fedora}/default/normalish/f%{fedora}.png fill|" %{buildroot}%{_sysconfdir}/sway/config
+sed -i "s|^output \* bg .*|output * bg /usr/share/backgrounds/default.png fill|" %{buildroot}%{_sysconfdir}/sway/config
 
 %files
 %license LICENSE
@@ -95,6 +95,9 @@ sed -i "s|^output \* bg .*|output * bg /usr/share/backgrounds/f%{fedora}/default
 %{_datadir}/backgrounds/sway
 
 %changelog
+* Wed Feb 26 2020 Aleksei Bavshin <alebastr89@gmail.com> - 1.4-4
+- Fix default terminal and background
+
 * Sun Feb 09 2020 Till Hofmann <thofmann@fedoraproject.org> - 1.4-3
 - Add patch to fix strcmp on nullptr (upstream PR #4991)
 
