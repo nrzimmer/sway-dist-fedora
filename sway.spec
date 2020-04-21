@@ -1,6 +1,6 @@
 Name:           sway
 Version:        1.4
-Release:        4%{?dist}
+Release:        5%{?dist}
 Summary:        i3-compatible window manager for Wayland
 License:        MIT
 URL:            https://github.com/swaywm/sway
@@ -95,6 +95,9 @@ sed -i "s|^output \* bg .*|output * bg /usr/share/backgrounds/default.png fill|"
 %{_datadir}/backgrounds/sway
 
 %changelog
+* Tue Apr 21 2020 Björn Esser <besser82@fedoraproject.org> - 1.4-5
+- Rebuild (json-c)
+
 * Wed Feb 26 2020 Aleksei Bavshin <alebastr89@gmail.com> - 1.4-4
 - Fix default terminal and background
 
