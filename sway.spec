@@ -1,12 +1,13 @@
 Name:           sway
 Version:        1.4
-Release:        5%{?dist}
+Release:        6%{?dist}
 Summary:        i3-compatible window manager for Wayland
 License:        MIT
 URL:            https://github.com/swaywm/sway
 Source0:        %{url}/releases/download/%{version}/%{name}-%{version}.tar.gz
 Patch1:         https://github.com/swaywm/sway/commit/29a5ce5f65d04b046271fbe53850836c77bbee80.patch#/link-with-fno-common.patch
 Patch2:         https://github.com/swaywm/sway/pull/4991.patch#/sway.fix-null-strcmp.patch
+Patch3:         %{url}/pull/4781.patch#/render-layer-shell-popups-over-the-top-layer.patch
 
 # FIXME: wlroots require `pkgconfig(egl)`, but assumes mesa provides it
 # (and uses it's extension header `<EGL/eglmesaext.h>).
@@ -95,6 +96,9 @@ sed -i "s|^output \* bg .*|output * bg /usr/share/backgrounds/default.png fill|"
 %{_datadir}/backgrounds/sway
 
 %changelog
+* Thu Apr 30 2020 Aleksei Bavshin <alebastr89@gmail.com> - 1.4-6
+- Add patch for layer-shell popups layer (#1829130)
+
 * Tue Apr 21 2020 Björn Esser <besser82@fedoraproject.org> - 1.4-5
 - Rebuild (json-c)
 

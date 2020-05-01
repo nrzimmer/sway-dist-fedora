@@ -1,0 +1,233 @@
+From 487e59ba6e6e54c309c420604685892f50d1a55f Mon Sep 17 00:00:00 2001
+From: David96 <david@hameipe.de>
+Date: Tue, 3 Dec 2019 16:03:38 +0100
+Subject: [PATCH 1/2] Render layer shell popups over the top layer
+
+---
+ include/sway/output.h |  8 +++++++
+ sway/desktop/output.c | 55 +++++++++++++++++++++++++++++++++++++++++++
+ sway/desktop/render.c | 31 +++++++++++++++++++-----
+ 3 files changed, 88 insertions(+), 6 deletions(-)
+
+diff --git a/include/sway/output.h b/include/sway/output.h
+index 4771b14f1..cabb4b557 100644
+--- a/include/sway/output.h
++++ b/include/sway/output.h
+@@ -125,6 +125,14 @@ void output_layer_for_each_surface(struct sway_output *output,
+ 	struct wl_list *layer_surfaces, sway_surface_iterator_func_t iterator,
+ 	void *user_data);
+ 
++void output_layer_for_each_surface_toplevel(struct sway_output *output,
++	struct wl_list *layer_surfaces, sway_surface_iterator_func_t iterator,
++	void *user_data);
++
++void output_layer_for_each_surface_popup(struct sway_output *output,
++	struct wl_list *layer_surfaces, sway_surface_iterator_func_t iterator,
++	void *user_data);
++
+ #if HAVE_XWAYLAND
+ void output_unmanaged_for_each_surface(struct sway_output *output,
+ 	struct wl_list *unmanaged, sway_surface_iterator_func_t iterator,
+diff --git a/sway/desktop/output.c b/sway/desktop/output.c
+index e6ed9be0d..880d4375f 100644
+--- a/sway/desktop/output.c
++++ b/sway/desktop/output.c
+@@ -243,6 +243,61 @@ void output_layer_for_each_surface(struct sway_output *output,
+ 	}
+ }
+ 
++void output_layer_for_each_surface_toplevel(struct sway_output *output,
++		struct wl_list *layer_surfaces, sway_surface_iterator_func_t iterator,
++		void *user_data) {
++	struct sway_layer_surface *layer_surface;
++	wl_list_for_each(layer_surface, layer_surfaces, link) {
++		struct wlr_layer_surface_v1 *wlr_layer_surface_v1 =
++			layer_surface->layer_surface;
++		output_surface_for_each_surface(output, wlr_layer_surface_v1->surface,
++			layer_surface->geo.x, layer_surface->geo.y, iterator,
++			user_data);
++	}
++}
++
++
++void output_layer_for_each_surface_popup(struct sway_output *output,
++		struct wl_list *layer_surfaces, sway_surface_iterator_func_t iterator,
++		void *user_data) {
++	struct sway_layer_surface *layer_surface;
++	wl_list_for_each(layer_surface, layer_surfaces, link) {
++		struct wlr_layer_surface_v1 *wlr_layer_surface_v1 =
++			layer_surface->layer_surface;
++
++		struct wlr_xdg_popup *state;
++		wl_list_for_each(state, &wlr_layer_surface_v1->popups, link) {
++			struct wlr_xdg_surface *popup = state->base;
++			if (!popup->configured) {
++				continue;
++			}
++
++			double popup_sx, popup_sy;
++			popup_sx = layer_surface->geo.x +
++				popup->popup->geometry.x - popup->geometry.x;
++			popup_sy = layer_surface->geo.y +
++				popup->popup->geometry.y - popup->geometry.y;
++
++			struct wlr_surface *surface = popup->surface;
++
++			struct surface_iterator_data data = {
++				.user_iterator = iterator,
++				.user_data = user_data,
++				.output = output,
++				.view = NULL,
++				.ox = popup_sx,
++				.oy = popup_sy,
++				.width = surface->current.width,
++				.height = surface->current.height,
++				.rotation = 0,
++			};
++
++			wlr_xdg_surface_for_each_surface(
++					popup, output_for_each_surface_iterator, &data);
++		}
++	}
++}
++
+ #if HAVE_XWAYLAND
+ void output_unmanaged_for_each_surface(struct sway_output *output,
+ 		struct wl_list *unmanaged, sway_surface_iterator_func_t iterator,
+diff --git a/sway/desktop/render.c b/sway/desktop/render.c
+index 477034fc9..14753df24 100644
+--- a/sway/desktop/render.c
++++ b/sway/desktop/render.c
+@@ -156,13 +156,23 @@ static void render_surface_iterator(struct sway_output *output, struct sway_view
+ 		wlr_output);
+ }
+ 
+-static void render_layer(struct sway_output *output,
++static void render_layer_toplevel(struct sway_output *output,
+ 		pixman_region32_t *damage, struct wl_list *layer_surfaces) {
+ 	struct render_data data = {
+ 		.damage = damage,
+ 		.alpha = 1.0f,
+ 	};
+-	output_layer_for_each_surface(output, layer_surfaces,
++	output_layer_for_each_surface_toplevel(output, layer_surfaces,
++		render_surface_iterator, &data);
++}
++
++static void render_layer_popups(struct sway_output *output,
++		pixman_region32_t *damage, struct wl_list *layer_surfaces) {
++	struct render_data data = {
++		.damage = damage,
++		.alpha = 1.0f,
++	};
++	output_layer_for_each_surface_popup(output, layer_surfaces,
+ 		render_surface_iterator, &data);
+ }
+ 
+@@ -1041,9 +1051,9 @@ void output_render(struct sway_output *output, struct timespec *when,
+ 			wlr_renderer_clear(renderer, clear_color);
+ 		}
+ 
+-		render_layer(output, damage,
++		render_layer_toplevel(output, damage,
+ 			&output->layers[ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND]);
+-		render_layer(output, damage,
++		render_layer_toplevel(output, damage,
+ 			&output->layers[ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM]);
+ 
+ 		render_workspace(output, damage, workspace, workspace->current.focused);
+@@ -1051,7 +1061,14 @@ void output_render(struct sway_output *output, struct timespec *when,
+ #if HAVE_XWAYLAND
+ 		render_unmanaged(output, damage, &root->xwayland_unmanaged);
+ #endif
+-		render_layer(output, damage,
++		render_layer_toplevel(output, damage,
++			&output->layers[ZWLR_LAYER_SHELL_V1_LAYER_TOP]);
++
++		render_layer_popups(output, damage,
++			&output->layers[ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND]);
++		render_layer_popups(output, damage,
++			&output->layers[ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM]);
++		render_layer_popups(output, damage,
+ 			&output->layers[ZWLR_LAYER_SHELL_V1_LAYER_TOP]);
+ 	}
+ 
+@@ -1064,7 +1081,9 @@ void output_render(struct sway_output *output, struct timespec *when,
+ 	}
+ 
+ render_overlay:
+-	render_layer(output, damage,
++	render_layer_toplevel(output, damage,
++		&output->layers[ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY]);
++	render_layer_popups(output, damage,
+ 		&output->layers[ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY]);
+ 	render_drag_icons(output, damage, &root->drag_icons);
+ 
+
+From 1cec05961413212c175ec979a7b2ddbb2f50a6a0 Mon Sep 17 00:00:00 2001
+From: Aleksei Bavshin <alebastr89@gmail.com>
+Date: Thu, 27 Feb 2020 17:55:55 -0800
+Subject: [PATCH 2/2] Adjust focus order to match rendering order of layer
+ shell popups.
+
+---
+ sway/input/cursor.c | 39 +++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 39 insertions(+)
+
+diff --git a/sway/input/cursor.c b/sway/input/cursor.c
+index 3a4a69b67..c2a58060d 100644
+--- a/sway/input/cursor.c
++++ b/sway/input/cursor.c
+@@ -52,6 +52,30 @@ static struct wlr_surface *layer_surface_at(struct sway_output *output,
+ 	return NULL;
+ }
+ 
++static bool surface_is_xdg_popup(struct wlr_surface *surface) {
++    if (wlr_surface_is_xdg_surface(surface)) {
++        struct wlr_xdg_surface *xdg_surface =
++            wlr_xdg_surface_from_wlr_surface(surface);
++        return xdg_surface->role == WLR_XDG_SURFACE_ROLE_POPUP;
++    }
++    return false;
++}
++
++static struct wlr_surface *layer_surface_popup_at(struct sway_output *output,
++		struct wl_list *layer, double ox, double oy, double *sx, double *sy) {
++	struct sway_layer_surface *sway_layer;
++	wl_list_for_each_reverse(sway_layer, layer, link) {
++		double _sx = ox - sway_layer->geo.x;
++		double _sy = oy - sway_layer->geo.y;
++		struct wlr_surface *sub = wlr_layer_surface_v1_surface_at(
++			sway_layer->layer_surface, _sx, _sy, sx, sy);
++		if (sub && surface_is_xdg_popup(sub)) {
++			return sub;
++		}
++	}
++	return NULL;
++}
++
+ /**
+  * Returns the node at the cursor's position. If there is a surface at that
+  * location, it is stored in **surface (it may not be a view).
+@@ -132,6 +156,21 @@ struct sway_node *node_at_coords(
+ 		}
+ 		return NULL;
+ 	}
++	if ((*surface = layer_surface_popup_at(output,
++				&output->layers[ZWLR_LAYER_SHELL_V1_LAYER_TOP],
++				ox, oy, sx, sy))) {
++		return NULL;
++	}
++	if ((*surface = layer_surface_popup_at(output,
++				&output->layers[ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM],
++				ox, oy, sx, sy))) {
++		return NULL;
++	}
++	if ((*surface = layer_surface_popup_at(output,
++				&output->layers[ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND],
++				ox, oy, sx, sy))) {
++		return NULL;
++	}
+ 	if ((*surface = layer_surface_at(output,
+ 				&output->layers[ZWLR_LAYER_SHELL_V1_LAYER_TOP],
+ 				ox, oy, sx, sy))) {
