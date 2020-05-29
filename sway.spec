@@ -1,6 +1,6 @@
 Name:           sway
 Version:        1.4
-Release:        6%{?dist}
+Release:        7%{?dist}
 Summary:        i3-compatible window manager for Wayland
 License:        MIT
 URL:            https://github.com/swaywm/sway
@@ -39,10 +39,15 @@ BuildRequires:  git
 BuildRequires:  scdoc
 # Dmenu is the default launcher in sway
 Recommends:     dmenu
+# In addition, xargs is recommended for use in such a launcher arrangement
+Recommends:     findutils
 
 Requires:       swaybg
 # By default the Fedora background is used
 Recommends:     desktop-backgrounds-compat
+
+# Lack of graphical drivers may hurt the common use case
+Recommends:     mesa-dri-drivers
 
 # dmenu (as well as rxvt any many others) requires XWayland on Sway
 Requires:       xorg-x11-server-Xwayland
@@ -96,6 +101,9 @@ sed -i "s|^output \* bg .*|output * bg /usr/share/backgrounds/default.png fill|"
 %{_datadir}/backgrounds/sway
 
 %changelog
+* Sat May 30 2020 Jan Pokorný <jpokorny@fedoraproject.org> 1.4-7
+- Enhance greenfield readiness with optional pull of default driver set & xargs
+
 * Thu Apr 30 2020 Aleksei Bavshin <alebastr89@gmail.com> - 1.4-6
 - Add patch for layer-shell popups layer (#1829130)
 
