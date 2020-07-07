@@ -1,6 +1,6 @@
 Name:           sway
 Version:        1.4
-Release:        7%{?dist}
+Release:        8%{?dist}
 Summary:        i3-compatible window manager for Wayland
 License:        MIT
 URL:            https://github.com/swaywm/sway
@@ -52,7 +52,8 @@ Recommends:     mesa-dri-drivers
 # dmenu (as well as rxvt any many others) requires XWayland on Sway
 Requires:       xorg-x11-server-Xwayland
 # Sway binds the terminal shortcut to one specific terminal. In our case urxvtc-ml
-Recommends:     rxvt-unicode-256color-ml
+# Use file dependency because the package rxvt-unicode-256color-ml does not exist in f32+
+Recommends:     %{_bindir}/urxvt256c-ml
 # grim is the recommended way to take screenshots on sway 1.0+
 Recommends:     grim
 
@@ -101,6 +102,9 @@ sed -i "s|^output \* bg .*|output * bg /usr/share/backgrounds/default.png fill|"
 %{_datadir}/backgrounds/sway
 
 %changelog
+* Sat Jul 04 2020 Aleksei Bavshin <alebastr89@gmail.com> - 1.4-8
+- Fix urxvt256c-ml dependency for f32+
+
 * Sat May 30 2020 Jan Pokorný <jpokorny@fedoraproject.org> 1.4-7
 - Enhance greenfield readiness with optional pull of default driver set & xargs
 
