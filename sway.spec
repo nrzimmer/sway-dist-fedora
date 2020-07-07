@@ -5,6 +5,10 @@ Summary:        i3-compatible window manager for Wayland
 License:        MIT
 URL:            https://github.com/swaywm/sway
 Source0:        %{url}/releases/download/%{version}/%{name}-%{version}.tar.gz
+Source1:        %{url}/releases/download/%{version}/%{name}-%{version}.tar.gz.sig
+# Drew DeVault (sway signing key) <sway@cmpwn.com>
+# Imported from http://pgp.mit.edu/pks/lookup?op=vindex&search=0x52CB6609B22DA89A
+Source2:        gpgkey-9DDA3B9FA5D58DD5392C78E652CB6609B22DA89A.gpg
 Patch1:         https://github.com/swaywm/sway/commit/29a5ce5f65d04b046271fbe53850836c77bbee80.patch#/link-with-fno-common.patch
 Patch2:         https://github.com/swaywm/sway/pull/4991.patch#/sway.fix-null-strcmp.patch
 Patch3:         %{url}/pull/4781.patch#/render-layer-shell-popups-over-the-top-layer.patch
@@ -16,6 +20,7 @@ Patch3:         %{url}/pull/4781.patch#/render-layer-shell-popups-over-the-top-l
 BuildRequires:  pkgconfig(egl) mesa-libEGL-devel
 BuildRequires:  cmake
 BuildRequires:  gcc-c++
+BuildRequires:  gnupg2
 BuildRequires:  make
 BuildRequires:  meson >= 0.48.0
 BuildRequires:  pam-devel
@@ -62,6 +67,7 @@ Sway is a tiling window manager supporting Wayland compositor protocol and
 i3-compatible configuration.
 
 %prep
+%{gpgverify} --keyring='%{SOURCE2}' --signature='%{SOURCE1}' --data='%{SOURCE0}'
 %autosetup -p 1
 
 %build
@@ -104,6 +110,7 @@ sed -i "s|^output \* bg .*|output * bg /usr/share/backgrounds/default.png fill|"
 %changelog
 * Sat Jul 04 2020 Aleksei Bavshin <alebastr89@gmail.com> - 1.4-8
 - Fix urxvt256c-ml dependency for f32+
+- Add source verification
 
 * Sat May 30 2020 Jan Pokorný <jpokorny@fedoraproject.org> 1.4-7
 - Enhance greenfield readiness with optional pull of default driver set & xargs
