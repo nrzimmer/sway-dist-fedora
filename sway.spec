@@ -13,35 +13,27 @@ Patch1:         https://github.com/swaywm/sway/commit/29a5ce5f65d04b046271fbe538
 Patch2:         https://github.com/swaywm/sway/pull/4991.patch#/sway.fix-null-strcmp.patch
 Patch3:         %{url}/pull/4781.patch#/render-layer-shell-popups-over-the-top-layer.patch
 
-# FIXME: wlroots require `pkgconfig(egl)`, but assumes mesa provides it
-# (and uses it's extension header `<EGL/eglmesaext.h>).
-# Upstream is working on not needing that: https://github.com/swaywm/wlroots/issues/1899
-# Until it is fixed, pull mesa-libEGL-devel manually
-BuildRequires:  pkgconfig(egl) mesa-libEGL-devel
-BuildRequires:  cmake
 BuildRequires:  gcc-c++
 BuildRequires:  gnupg2
-BuildRequires:  make
-BuildRequires:  meson >= 0.48.0
-BuildRequires:  pam-devel
+BuildRequires:  meson >= 0.53.0
 BuildRequires:  pkgconfig(cairo)
-BuildRequires:  pkgconfig(dbus-1)
 BuildRequires:  pkgconfig(gdk-pixbuf-2.0)
 BuildRequires:  pkgconfig(json-c) >= 0.13
-BuildRequires:  pkgconfig(libcap)
+BuildRequires:  pkgconfig(libevdev)
 BuildRequires:  pkgconfig(libinput) >= 1.6.0
 BuildRequires:  pkgconfig(libpcre)
+BuildRequires:  pkgconfig(libsystemd) >= 239
 BuildRequires:  pkgconfig(pango)
+BuildRequires:  pkgconfig(pangocairo)
+BuildRequires:  pkgconfig(scdoc)
 BuildRequires:  pkgconfig(wayland-client)
 BuildRequires:  pkgconfig(wayland-cursor)
 BuildRequires:  pkgconfig(wayland-egl)
 BuildRequires:  pkgconfig(wayland-server)
 BuildRequires:  pkgconfig(wayland-protocols) >= 1.14
 BuildRequires:  pkgconfig(wlroots) >= 0.10.0
-BuildRequires:  wayland-devel
-BuildRequires:  libevdev-devel
-BuildRequires:  git
-BuildRequires:  scdoc
+BuildRequires:  pkgconfig(xcb)
+BuildRequires:  pkgconfig(xkbcommon)
 # Dmenu is the default launcher in sway
 Recommends:     dmenu
 # In addition, xargs is recommended for use in such a launcher arrangement
@@ -111,6 +103,7 @@ sed -i "s|^output \* bg .*|output * bg /usr/share/backgrounds/default.png fill|"
 * Sat Jul 04 2020 Aleksei Bavshin <alebastr89@gmail.com> - 1.4-8
 - Fix urxvt256c-ml dependency for f32+
 - Add source verification
+- Cleanup build dependencies
 
 * Sat May 30 2020 Jan Pokorný <jpokorny@fedoraproject.org> 1.4-7
 - Enhance greenfield readiness with optional pull of default driver set & xargs
