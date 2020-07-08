@@ -1,6 +1,6 @@
 Name:           sway
-Version:        1.4
-Release:        8%{?dist}
+Version:        1.5
+Release:        1%{?dist}
 Summary:        i3-compatible window manager for Wayland
 License:        MIT
 URL:            https://github.com/swaywm/sway
@@ -9,9 +9,6 @@ Source1:        %{url}/releases/download/%{version}/%{name}-%{version}.tar.gz.si
 # Drew DeVault (sway signing key) <sway@cmpwn.com>
 # Imported from http://pgp.mit.edu/pks/lookup?op=vindex&search=0x52CB6609B22DA89A
 Source2:        gpgkey-9DDA3B9FA5D58DD5392C78E652CB6609B22DA89A.gpg
-Patch1:         https://github.com/swaywm/sway/commit/29a5ce5f65d04b046271fbe53850836c77bbee80.patch#/link-with-fno-common.patch
-Patch2:         https://github.com/swaywm/sway/pull/4991.patch#/sway.fix-null-strcmp.patch
-Patch3:         %{url}/pull/4781.patch#/render-layer-shell-popups-over-the-top-layer.patch
 
 BuildRequires:  gcc-c++
 BuildRequires:  gnupg2
@@ -31,7 +28,7 @@ BuildRequires:  pkgconfig(wayland-cursor)
 BuildRequires:  pkgconfig(wayland-egl)
 BuildRequires:  pkgconfig(wayland-server)
 BuildRequires:  pkgconfig(wayland-protocols) >= 1.14
-BuildRequires:  pkgconfig(wlroots) >= 0.10.0
+BuildRequires:  pkgconfig(wlroots) >= 0.11.0
 BuildRequires:  pkgconfig(xcb)
 BuildRequires:  pkgconfig(xkbcommon)
 # Dmenu is the default launcher in sway
@@ -60,7 +57,7 @@ i3-compatible configuration.
 
 %prep
 %{gpgverify} --keyring='%{SOURCE2}' --signature='%{SOURCE1}' --data='%{SOURCE0}'
-%autosetup -p 1
+%autosetup -p1
 
 %build
 %meson
@@ -78,8 +75,6 @@ sed -i "s|^output \* bg .*|output * bg /usr/share/backgrounds/default.png fill|"
 %doc README.md
 %dir %{_sysconfdir}/sway
 %config(noreplace) %{_sysconfdir}/sway/config
-%dir %{_sysconfdir}/sway/security.d
-%config(noreplace) %{_sysconfdir}/sway/security.d/00-defaults
 %{_mandir}/man1/*
 %{_mandir}/man5/*
 %{_mandir}/man7/*
@@ -100,7 +95,8 @@ sed -i "s|^output \* bg .*|output * bg /usr/share/backgrounds/default.png fill|"
 %{_datadir}/backgrounds/sway
 
 %changelog
-* Sat Jul 04 2020 Aleksei Bavshin <alebastr89@gmail.com> - 1.4-8
+* Wed Jul 15 2020 Aleksei Bavshin <alebastr89@gmail.com> - 1.5-1
+- Update to 1.5
 - Fix urxvt256c-ml dependency for f32+
 - Add source verification
 - Cleanup build dependencies
