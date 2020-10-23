@@ -1,6 +1,6 @@
 Name:           sway
 Version:        1.5
-Release:        2%{?dist}
+Release:        3%{?dist}
 Summary:        i3-compatible window manager for Wayland
 License:        MIT
 URL:            https://github.com/swaywm/sway
@@ -45,9 +45,8 @@ Recommends:     mesa-dri-drivers
 
 # dmenu (as well as rxvt any many others) requires XWayland on Sway
 Requires:       xorg-x11-server-Xwayland
-# Sway binds the terminal shortcut to one specific terminal. In our case urxvtc-ml
-# Use file dependency because the package rxvt-unicode-256color-ml does not exist in f32+
-Recommends:     %{_bindir}/urxvt256c-ml
+# Sway binds the terminal shortcut to one specific terminal. In our case alacritty
+Recommends:     alacritty
 # grim is the recommended way to take screenshots on sway 1.0+
 Recommends:     grim
 
@@ -65,8 +64,6 @@ i3-compatible configuration.
 
 %install
 %meson_install
-# Set default terminal to urxvt256c-ml
-sed -i 's/^set $term .*/set \$term urxvt256c-ml/' %{buildroot}%{_sysconfdir}/sway/config
 # Set Fedora background as default background
 sed -i "s|^output \* bg .*|output * bg /usr/share/backgrounds/default.png fill|" %{buildroot}%{_sysconfdir}/sway/config
 
@@ -95,6 +92,9 @@ sed -i "s|^output \* bg .*|output * bg /usr/share/backgrounds/default.png fill|"
 %{_datadir}/backgrounds/sway
 
 %changelog
+* Thu Oct 22 2020 Aleksei Bavshin <alebastr@fedoraproject.org> - 1.5-3
+- Remove default terminal patching; alacritty is avaliable in Fedora (#1830595)
+
 * Wed Jul 29 2020 Fedora Release Engineering <releng@fedoraproject.org> - 1.5-2
 - Rebuilt for https://fedoraproject.org/wiki/Fedora_33_Mass_Rebuild
 
