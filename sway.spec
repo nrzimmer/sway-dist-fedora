@@ -1,14 +1,13 @@
 Name:           sway
-Version:        1.5
-Release:        3%{?dist}
+Version:        1.5.1
+Release:        1%{?dist}
 Summary:        i3-compatible window manager for Wayland
 License:        MIT
 URL:            https://github.com/swaywm/sway
 Source0:        %{url}/releases/download/%{version}/%{name}-%{version}.tar.gz
 Source1:        %{url}/releases/download/%{version}/%{name}-%{version}.tar.gz.sig
-# Drew DeVault (sway signing key) <sway@cmpwn.com>
-# Imported from http://pgp.mit.edu/pks/lookup?op=vindex&search=0x52CB6609B22DA89A
-Source2:        gpgkey-9DDA3B9FA5D58DD5392C78E652CB6609B22DA89A.gpg
+# 0FDE7BE0E88F5E48: emersion <contact@emersion.fr>
+Source2:        https://emersion.fr/.well-known/openpgpkey/hu/dj3498u4hyyarh35rkjfnghbjxug6b19#/gpgkey-0FDE7BE0E88F5E48.gpg
 
 BuildRequires:  gcc-c++
 BuildRequires:  gnupg2
@@ -28,7 +27,7 @@ BuildRequires:  pkgconfig(wayland-cursor)
 BuildRequires:  pkgconfig(wayland-egl)
 BuildRequires:  pkgconfig(wayland-server)
 BuildRequires:  pkgconfig(wayland-protocols) >= 1.14
-BuildRequires:  pkgconfig(wlroots) >= 0.11.0
+BuildRequires:  pkgconfig(wlroots) >= 0.12.0
 BuildRequires:  pkgconfig(xcb)
 BuildRequires:  pkgconfig(xkbcommon)
 # Dmenu is the default launcher in sway
@@ -92,6 +91,9 @@ sed -i "s|^output \* bg .*|output * bg /usr/share/backgrounds/default.png fill|"
 %{_datadir}/backgrounds/sway
 
 %changelog
+* Tue Nov 10 2020 Aleksei Bavshin <alebastr@fedoraproject.org> - 1.5.1-1
+- Update to 1.5.1
+
 * Thu Oct 22 2020 Aleksei Bavshin <alebastr@fedoraproject.org> - 1.5-3
 - Remove default terminal patching; alacritty is avaliable in Fedora (#1830595)
 
