@@ -1,6 +1,6 @@
 Name:           sway
 Version:        1.5.1
-Release:        2%{?dist}
+Release:        3%{?dist}
 Summary:        i3-compatible window manager for Wayland
 License:        MIT
 URL:            https://github.com/swaywm/sway
@@ -41,6 +41,9 @@ Recommends:     desktop-backgrounds-compat
 
 # Lack of graphical drivers may hurt the common use case
 Recommends:     mesa-dri-drivers
+# Minimal installation doesn't include Qt Wayland backend
+Recommends:     (qt5-qtwayland if qt5-qtbase-gui)
+Recommends:     (qt6-qtwayland if qt6-qtbase-gui)
 
 # dmenu (as well as rxvt any many others) requires XWayland on Sway
 Requires:       xorg-x11-server-Xwayland
@@ -91,6 +94,9 @@ sed -i "s|^output \* bg .*|output * bg /usr/share/backgrounds/default.png fill|"
 %{_datadir}/backgrounds/sway
 
 %changelog
+* Wed Jan 27 2021 Aleksei Bavshin <alebastr@fedoraproject.org> - 1.5.1-3
+- Recommend wayland backend for Qt
+
 * Wed Jan 27 2021 Fedora Release Engineering <releng@fedoraproject.org> - 1.5.1-2
 - Rebuilt for https://fedoraproject.org/wiki/Fedora_34_Mass_Rebuild
 
