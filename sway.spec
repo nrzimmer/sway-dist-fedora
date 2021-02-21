@@ -56,6 +56,19 @@ Recommends:     grim
 Sway is a tiling window manager supporting Wayland compositor protocol and
 i3-compatible configuration.
 
+%package -n     grimshot
+Summary:        Helper for screenshots within sway
+Requires:       grim
+Requires:       jq
+Requires:       slurp
+Requires:       /usr/bin/wl-copy
+Recommends:     /usr/bin/notify-send
+
+%description -n grimshot
+Grimshot is an easy to use screenshot tool for sway. It relies on grim,
+slurp and jq to do the heavy lifting, and mostly provides an easy to use
+interface.
+
 %prep
 %{gpgverify} --keyring='%{SOURCE2}' --signature='%{SOURCE1}' --data='%{SOURCE0}'
 %autosetup -p1
@@ -69,12 +82,16 @@ i3-compatible configuration.
 # Set Fedora background as default background
 sed -i "s|^output \* bg .*|output * bg /usr/share/backgrounds/default.png fill|" %{buildroot}%{_sysconfdir}/sway/config
 
+# install contrib/grimshot tool
+scdoc <contrib/grimshot.1.scd >%{buildroot}%{_mandir}/man1/grimshot.1
+install -D -m755 -pv contrib/grimshot %{buildroot}%{_bindir}/grimshot
+
 %files
 %license LICENSE
 %doc README.md
 %dir %{_sysconfdir}/sway
 %config(noreplace) %{_sysconfdir}/sway/config
-%{_mandir}/man1/*
+%{_mandir}/man1/sway*
 %{_mandir}/man5/*
 %{_mandir}/man7/*
 %{_bindir}/sway
@@ -93,9 +110,14 @@ sed -i "s|^output \* bg .*|output * bg /usr/share/backgrounds/default.png fill|"
 %{_datadir}/fish/vendor_completions.d/sway*
 %{_datadir}/backgrounds/sway
 
+%files -n grimshot
+%{_bindir}/grimshot
+%{_mandir}/man1/grimshot.1*
+
 %changelog
-* Wed Jan 27 2021 Aleksei Bavshin <alebastr@fedoraproject.org> - 1.5.1-3
+* Sat Feb 20 2021 Aleksei Bavshin <alebastr@fedoraproject.org> - 1.5.1-3
 - Recommend wayland backend for Qt
+- Add subpackage for contrib/grimshot screenshot tool
 
 * Wed Jan 27 2021 Fedora Release Engineering <releng@fedoraproject.org> - 1.5.1-2
 - Rebuilt for https://fedoraproject.org/wiki/Fedora_34_Mass_Rebuild
