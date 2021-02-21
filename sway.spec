@@ -34,6 +34,8 @@ BuildRequires:  pkgconfig(xkbcommon)
 Recommends:     dmenu
 # In addition, xargs is recommended for use in such a launcher arrangement
 Recommends:     findutils
+# Install configs and scripts for better integration with systemd user session
+Recommends:     sway-systemd
 
 Requires:       swaybg
 # By default the Fedora background is used
@@ -81,6 +83,8 @@ interface.
 %meson_install
 # Set Fedora background as default background
 sed -i "s|^output \* bg .*|output * bg /usr/share/backgrounds/default.png fill|" %{buildroot}%{_sysconfdir}/sway/config
+# Create directory for extra config snippets
+install -d -m755 -pv %{buildroot}%{_sysconfdir}/sway/config.d
 
 # install contrib/grimshot tool
 scdoc <contrib/grimshot.1.scd >%{buildroot}%{_mandir}/man1/grimshot.1
@@ -90,6 +94,7 @@ install -D -m755 -pv contrib/grimshot %{buildroot}%{_bindir}/grimshot
 %license LICENSE
 %doc README.md
 %dir %{_sysconfdir}/sway
+%dir %{_sysconfdir}/sway/config.d
 %config(noreplace) %{_sysconfdir}/sway/config
 %{_mandir}/man1/sway*
 %{_mandir}/man5/*
@@ -118,6 +123,7 @@ install -D -m755 -pv contrib/grimshot %{buildroot}%{_bindir}/grimshot
 * Sat Feb 20 2021 Aleksei Bavshin <alebastr@fedoraproject.org> - 1.5.1-3
 - Recommend wayland backend for Qt
 - Add subpackage for contrib/grimshot screenshot tool
+- Add 'Recommend: sway-systemd'
 
 * Wed Jan 27 2021 Fedora Release Engineering <releng@fedoraproject.org> - 1.5.1-2
 - Rebuilt for https://fedoraproject.org/wiki/Fedora_34_Mass_Rebuild
