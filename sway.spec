@@ -1,6 +1,6 @@
 Name:           sway
-Version:        1.5.1
-Release:        3%{?dist}
+Version:        1.6
+Release:        1%{?dist}
 Summary:        i3-compatible window manager for Wayland
 License:        MIT
 URL:            https://github.com/swaywm/sway
@@ -15,10 +15,12 @@ BuildRequires:  meson >= 0.53.0
 BuildRequires:  pkgconfig(cairo)
 BuildRequires:  pkgconfig(gdk-pixbuf-2.0)
 BuildRequires:  pkgconfig(json-c) >= 0.13
+BuildRequires:  pkgconfig(libdrm)
 BuildRequires:  pkgconfig(libevdev)
 BuildRequires:  pkgconfig(libinput) >= 1.6.0
 BuildRequires:  pkgconfig(libpcre)
 BuildRequires:  pkgconfig(libsystemd) >= 239
+BuildRequires:  pkgconfig(libudev)
 BuildRequires:  pkgconfig(pango)
 BuildRequires:  pkgconfig(pangocairo)
 BuildRequires:  pkgconfig(scdoc)
@@ -27,7 +29,7 @@ BuildRequires:  pkgconfig(wayland-cursor)
 BuildRequires:  pkgconfig(wayland-egl)
 BuildRequires:  pkgconfig(wayland-server)
 BuildRequires:  pkgconfig(wayland-protocols) >= 1.14
-BuildRequires:  pkgconfig(wlroots) >= 0.12.0
+BuildRequires:  pkgconfig(wlroots) >= 0.13.0
 BuildRequires:  pkgconfig(xcb)
 BuildRequires:  pkgconfig(xkbcommon)
 # Dmenu is the default launcher in sway
@@ -76,7 +78,8 @@ interface.
 %autosetup -p1
 
 %build
-%meson
+%meson \
+    -Dsd-bus-provider=libsystemd
 %meson_build
 
 %install
@@ -120,6 +123,9 @@ install -D -m755 -pv contrib/grimshot %{buildroot}%{_bindir}/grimshot
 %{_mandir}/man1/grimshot.1*
 
 %changelog
+* Wed Apr 07 2021 Aleksei Bavshin <alebastr@fedoraproject.org> - 1.6-1
+- Update to 1.6 (#1939820)
+
 * Sat Feb 20 2021 Aleksei Bavshin <alebastr@fedoraproject.org> - 1.5.1-3
 - Recommend wayland backend for Qt
 - Add subpackage for contrib/grimshot screenshot tool
