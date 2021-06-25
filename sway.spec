@@ -1,5 +1,5 @@
 Name:           sway
-Version:        1.6
+Version:        1.6.1
 Release:        1%{?dist}
 Summary:        i3-compatible window manager for Wayland
 License:        MIT
@@ -29,7 +29,7 @@ BuildRequires:  pkgconfig(wayland-cursor)
 BuildRequires:  pkgconfig(wayland-egl)
 BuildRequires:  pkgconfig(wayland-server)
 BuildRequires:  pkgconfig(wayland-protocols) >= 1.14
-BuildRequires:  pkgconfig(wlroots) >= 0.13.0
+BuildRequires:  pkgconfig(wlroots) >= 0.14.0
 BuildRequires:  pkgconfig(xcb)
 BuildRequires:  pkgconfig(xkbcommon)
 # Dmenu is the default launcher in sway
@@ -40,6 +40,8 @@ Recommends:     findutils
 Recommends:     sway-systemd
 
 Requires:       swaybg
+Recommends:     swayidle
+Recommends:     swaylock
 # By default the Fedora background is used
 Recommends:     desktop-backgrounds-compat
 
@@ -123,6 +125,10 @@ install -D -m755 -pv contrib/grimshot %{buildroot}%{_bindir}/grimshot
 %{_mandir}/man1/grimshot.1*
 
 %changelog
+* Thu Jun 24 2021 Aleksei Bavshin <alebastr@fedoraproject.org> - 1.6.1-1
+- Update to 1.6.1
+- Add Recommends: swayidle, swaylock
+
 * Wed Apr 07 2021 Aleksei Bavshin <alebastr@fedoraproject.org> - 1.6-1
 - Update to 1.6 (#1939820)
 
