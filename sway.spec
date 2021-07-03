@@ -9,6 +9,9 @@ Source1:        %{url}/releases/download/%{version}/%{name}-%{version}.tar.gz.si
 # 0FDE7BE0E88F5E48: emersion <contact@emersion.fr>
 Source2:        https://emersion.fr/.well-known/openpgpkey/hu/dj3498u4hyyarh35rkjfnghbjxug6b19#/gpgkey-0FDE7BE0E88F5E48.gpg
 
+# Fixes initialization of pixman renderer, swaywm/sway#6355
+Patch0:         %{url}/commit/86b08e3.patch#/sway-1.6.1-desktop-render-remove-unused-wlr_gles2_texture_attri.patch
+
 BuildRequires:  gcc-c++
 BuildRequires:  gnupg2
 BuildRequires:  meson >= 0.53.0
@@ -128,6 +131,7 @@ install -D -m755 -pv contrib/grimshot %{buildroot}%{_bindir}/grimshot
 * Thu Jun 24 2021 Aleksei Bavshin <alebastr@fedoraproject.org> - 1.6.1-1
 - Update to 1.6.1
 - Add Recommends: swayidle, swaylock
+- Add upstream patch to fix pixman renderer init.
 
 * Wed Apr 07 2021 Aleksei Bavshin <alebastr@fedoraproject.org> - 1.6-1
 - Update to 1.6 (#1939820)

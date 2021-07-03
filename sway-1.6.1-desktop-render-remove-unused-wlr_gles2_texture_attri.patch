@@ -1,0 +1,25 @@
+From 86b08e3257a4e3e204740f6252c5b1180ead8467 Mon Sep 17 00:00:00 2001
+From: Simon Ser <contact@emersion.fr>
+Date: Sun, 11 Apr 2021 12:15:51 +0200
+Subject: [PATCH] desktop/render: remove unused wlr_gles2_texture_attribs
+
+We were calling wlr_gles2_texture_get_attribs, but we were never
+using the result.
+---
+ sway/desktop/render.c | 3 ---
+ 1 file changed, 3 deletions(-)
+
+diff --git a/sway/desktop/render.c b/sway/desktop/render.c
+index 466222240f..56936d539e 100644
+--- a/sway/desktop/render.c
++++ b/sway/desktop/render.c
+@@ -105,9 +105,6 @@ static void render_texture(struct wlr_output *wlr_output,
+ 		wlr_backend_get_renderer(wlr_output->backend);
+ 	struct sway_output *output = wlr_output->data;
+ 
+-	struct wlr_gles2_texture_attribs attribs;
+-	wlr_gles2_texture_get_attribs(texture, &attribs);
+-
+ 	pixman_region32_t damage;
+ 	pixman_region32_init(&damage);
+ 	pixman_region32_union_rect(&damage, &damage, dst_box->x, dst_box->y,
