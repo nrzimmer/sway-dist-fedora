@@ -1,6 +1,6 @@
 Name:           sway
 Version:        1.6.1
-Release:        2%{?dist}
+Release:        3%{?dist}
 Summary:        i3-compatible window manager for Wayland
 License:        MIT
 URL:            https://github.com/swaywm/sway
@@ -128,6 +128,9 @@ install -D -m755 -pv contrib/grimshot %{buildroot}%{_bindir}/grimshot
 %{_mandir}/man1/grimshot.1*
 
 %changelog
+* Fri Jul 23 2021 Fedora Release Engineering <releng@fedoraproject.org> - 1.6.1-3
+- Rebuilt for https://fedoraproject.org/wiki/Fedora_35_Mass_Rebuild
+
 * Sat Jul 10 2021 Björn Esser <besser82@fedoraproject.org> - 1.6.1-2
 - Rebuild for versioned symbols in json-c
 
