@@ -1,6 +1,6 @@
 Name:           sway
 Version:        1.6.1
-Release:        3%{?dist}
+Release:        4%{?dist}
 Summary:        i3-compatible window manager for Wayland
 License:        MIT
 URL:            https://github.com/swaywm/sway
@@ -11,6 +11,9 @@ Source2:        https://emersion.fr/.well-known/openpgpkey/hu/dj3498u4hyyarh35rk
 
 # Fixes initialization of pixman renderer, swaywm/sway#6355
 Patch0:         %{url}/commit/86b08e3.patch#/sway-1.6.1-desktop-render-remove-unused-wlr_gles2_texture_attri.patch
+# Fixes various issues caused by reaching the limit of available file descriptors
+# Backported from 38020d1, swaywm/sway#6629
+Patch1:         sway-1.6.1-Bump-RLIMIT_NOFILE.patch
 
 BuildRequires:  gcc-c++
 BuildRequires:  gnupg2
@@ -128,6 +131,9 @@ install -D -m755 -pv contrib/grimshot %{buildroot}%{_bindir}/grimshot
 %{_mandir}/man1/grimshot.1*
 
 %changelog
+* Mon Jan 10 2022 Aleksei Bavshin <alebastr@fedoraproject.org> - 1.6.1-4
+- Add upstream patch to increase RLIMIT_NOFILE
+
 * Fri Jul 23 2021 Fedora Release Engineering <releng@fedoraproject.org> - 1.6.1-3
 - Rebuilt for https://fedoraproject.org/wiki/Fedora_35_Mass_Rebuild
 
