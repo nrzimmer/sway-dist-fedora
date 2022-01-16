@@ -1,23 +1,26 @@
+%global tag     1.7-rc3
+
 Name:           sway
-Version:        1.6.1
-Release:        4%{?dist}
+Version:        %(echo %{tag} | tr '-' '~')
+Release:        1%{?dist}
 Summary:        i3-compatible window manager for Wayland
 License:        MIT
 URL:            https://github.com/swaywm/sway
-Source0:        %{url}/releases/download/%{version}/%{name}-%{version}.tar.gz
-Source1:        %{url}/releases/download/%{version}/%{name}-%{version}.tar.gz.sig
+Source0:        %{url}/releases/download/%{tag}/%{name}-%{tag}.tar.gz
+Source1:        %{url}/releases/download/%{tag}/%{name}-%{tag}.tar.gz.sig
 # 0FDE7BE0E88F5E48: emersion <contact@emersion.fr>
 Source2:        https://emersion.fr/.well-known/openpgpkey/hu/dj3498u4hyyarh35rkjfnghbjxug6b19#/gpgkey-0FDE7BE0E88F5E48.gpg
 
-# Fixes initialization of pixman renderer, swaywm/sway#6355
-Patch0:         %{url}/commit/86b08e3.patch#/sway-1.6.1-desktop-render-remove-unused-wlr_gles2_texture_attri.patch
-# Fixes various issues caused by reaching the limit of available file descriptors
-# Backported from 38020d1, swaywm/sway#6629
-Patch1:         sway-1.6.1-Bump-RLIMIT_NOFILE.patch
+%if 0%{?fedora} < 36
+# Revert the commits that require wayland 1.20 and meson 0.60
+# Allows module builds on f34 and f35
+Patch100:       sway-1.7-meson-0.59-compat.patch
+Patch101:       sway-1.7-wayland-1.19-compat.patch
+%endif
 
 BuildRequires:  gcc-c++
 BuildRequires:  gnupg2
-BuildRequires:  meson >= 0.53.0
+BuildRequires:  meson >= 0.59.0
 BuildRequires:  pkgconfig(cairo)
 BuildRequires:  pkgconfig(gdk-pixbuf-2.0)
 BuildRequires:  pkgconfig(json-c) >= 0.13
@@ -34,8 +37,8 @@ BuildRequires:  pkgconfig(wayland-client)
 BuildRequires:  pkgconfig(wayland-cursor)
 BuildRequires:  pkgconfig(wayland-egl)
 BuildRequires:  pkgconfig(wayland-server)
-BuildRequires:  pkgconfig(wayland-protocols) >= 1.14
-BuildRequires:  pkgconfig(wlroots) >= 0.14.0
+BuildRequires:  pkgconfig(wayland-protocols) >= 1.24
+BuildRequires:  (pkgconfig(wlroots) >= 0.15.0 with pkgconfig(wlroots) < 0.16)
 BuildRequires:  pkgconfig(xcb)
 BuildRequires:  pkgconfig(xkbcommon)
 # Dmenu is the default launcher in sway
@@ -59,8 +62,8 @@ Recommends:     (qt6-qtwayland if qt6-qtbase-gui)
 
 # dmenu (as well as rxvt any many others) requires XWayland on Sway
 Requires:       xorg-x11-server-Xwayland
-# Sway binds the terminal shortcut to one specific terminal. In our case alacritty
-Recommends:     alacritty
+# Sway binds the terminal shortcut to one specific terminal. In our case foot
+Recommends:     foot
 # grim is the recommended way to take screenshots on sway 1.0+
 Recommends:     grim
 
@@ -83,11 +86,12 @@ interface.
 
 %prep
 %{gpgverify} --keyring='%{SOURCE2}' --signature='%{SOURCE1}' --data='%{SOURCE0}'
-%autosetup -p1
+%autosetup -p1 -n %{name}-%{tag}
 
 %build
 %meson \
-    -Dsd-bus-provider=libsystemd
+    -Dsd-bus-provider=libsystemd \
+    -Dwerror=false
 %meson_build
 
 %install
@@ -131,6 +135,11 @@ install -D -m755 -pv contrib/grimshot %{buildroot}%{_bindir}/grimshot
 %{_mandir}/man1/grimshot.1*
 
 %changelog
+* Sun Jan 16 2022 Aleksei Bavshin <alebastr@fedoraproject.org> - 1.7~rc3-1
+- Update to 1.7-rc3
+- Change default terminal dependency to foot
+- Disable `werror` to work around a couple of new warnings in GCC 12
+
 * Mon Jan 10 2022 Aleksei Bavshin <alebastr@fedoraproject.org> - 1.6.1-4
 - Add upstream patch to increase RLIMIT_NOFILE
 
