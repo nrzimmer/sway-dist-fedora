@@ -64,6 +64,17 @@ Recommends:     grim
 Sway is a tiling window manager supporting Wayland compositor protocol and
 i3-compatible configuration.
 
+
+# The artwork is heavy and we don't use it with our default config
+%package        wallpapers
+Summary:        Wallpapers for Sway
+BuildArch:      noarch
+License:        CC0
+
+%description    wallpapers
+Wallpaper collection provided with Sway
+
+
 %package -n     grimshot
 Summary:        Helper for screenshots within sway
 Requires:       grim
@@ -125,6 +136,9 @@ install -D -m755 -pv contrib/grimshot %{buildroot}%{_bindir}/grimshot
 %dir %{_datadir}/fish
 %dir %{_datadir}/fish/vendor_completions.d
 %{_datadir}/fish/vendor_completions.d/sway*
+
+%files wallpapers
+%license assets/LICENSE
 %{_datadir}/backgrounds/sway
 
 %files -n grimshot
@@ -134,6 +148,7 @@ install -D -m755 -pv contrib/grimshot %{buildroot}%{_bindir}/grimshot
 %changelog
 * Wed Jun 01 2022 Aleksei Bavshin <alebastr@fedoraproject.org> - 1.7-2
 - Drop patches for wayland 1.19/meson 0.59 compatibility
+- Split package with the default wallpapers
 
 * Sat Jan 22 2022 Aleksei Bavshin <alebastr@fedoraproject.org> - 1.7-1
 - Update to 1.7
