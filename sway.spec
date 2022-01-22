@@ -2,7 +2,7 @@
 
 Name:           sway
 Version:        %(echo %{tag} | tr '-' '~')
-Release:        1%{?dist}
+Release:        2%{?dist}
 Summary:        i3-compatible window manager for Wayland
 License:        MIT
 URL:            https://github.com/swaywm/sway
@@ -135,6 +135,9 @@ install -D -m755 -pv contrib/grimshot %{buildroot}%{_bindir}/grimshot
 %{_mandir}/man1/grimshot.1*
 
 %changelog
+* Sat Jan 22 2022 Fedora Release Engineering <releng@fedoraproject.org> - 1.7~rc3-2
+- Rebuilt for https://fedoraproject.org/wiki/Fedora_36_Mass_Rebuild
+
 * Sun Jan 16 2022 Aleksei Bavshin <alebastr@fedoraproject.org> - 1.7~rc3-1
 - Update to 1.7-rc3
 - Change default terminal dependency to foot
