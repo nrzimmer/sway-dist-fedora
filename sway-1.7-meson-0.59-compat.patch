@@ -58,7 +58,7 @@ index ebf6e76e..8dc9120b 100644
 +++ b/meson.build
 @@ -3,7 +3,7 @@ project(
  	'c',
- 	version: '1.7-rc3',
+ 	version: '1.7',
  	license: 'MIT',
 -	meson_version: '>=0.60.0',
 +	meson_version: '>=0.59.0',
