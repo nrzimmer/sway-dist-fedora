@@ -101,6 +101,9 @@ sed -i "s|^output \* bg .*|output * bg /usr/share/backgrounds/default.png fill|"
 # Create directory for extra config snippets
 install -d -m755 -pv %{buildroot}%{_sysconfdir}/sway/config.d
 
+# install python scripts from contrib
+install -D -m644 -pv -t %{buildroot}%{_datadir}/sway/contrib contrib/*.py
+
 # install contrib/grimshot tool
 scdoc <contrib/grimshot.1.scd >%{buildroot}%{_mandir}/man1/grimshot.1
 install -D -m755 -pv contrib/grimshot %{buildroot}%{_bindir}/grimshot
@@ -118,6 +121,7 @@ install -D -m755 -pv contrib/grimshot %{buildroot}%{_bindir}/grimshot
 %{_bindir}/swaybar
 %{_bindir}/swaymsg
 %{_bindir}/swaynag
+%{_datadir}/sway
 %{_datadir}/wayland-sessions/sway.desktop
 %dir %{_datadir}/zsh
 %dir %{_datadir}/zsh/site-functions
@@ -137,6 +141,7 @@ install -D -m755 -pv contrib/grimshot %{buildroot}%{_bindir}/grimshot
 %changelog
 * Sat Jan 22 2022 Aleksei Bavshin <alebastr@fedoraproject.org> - 1.7-1
 - Update to 1.7
+- Add scripts from contrib to the package
 
 * Sat Jan 22 2022 Fedora Release Engineering <releng@fedoraproject.org> - 1.7~rc3-2
 - Rebuilt for https://fedoraproject.org/wiki/Fedora_36_Mass_Rebuild
