@@ -2,7 +2,7 @@
 
 Name:           sway
 Version:        1.7
-Release:        1%{?dist}
+Release:        2%{?dist}
 Summary:        i3-compatible window manager for Wayland
 License:        MIT
 URL:            https://github.com/swaywm/sway
@@ -11,16 +11,9 @@ Source1:        %{url}/releases/download/%{tag}/%{name}-%{tag}.tar.gz.sig
 # 0FDE7BE0E88F5E48: emersion <contact@emersion.fr>
 Source2:        https://emersion.fr/.well-known/openpgpkey/hu/dj3498u4hyyarh35rkjfnghbjxug6b19#/gpgkey-0FDE7BE0E88F5E48.gpg
 
-%if 0%{?fedora} < 36
-# Revert the commits that require wayland 1.20 and meson 0.60
-# Allows module builds on f34 and f35
-Patch100:       sway-1.7-meson-0.59-compat.patch
-Patch101:       sway-1.7-wayland-1.19-compat.patch
-%endif
-
 BuildRequires:  gcc-c++
 BuildRequires:  gnupg2
-BuildRequires:  meson >= 0.59.0
+BuildRequires:  meson >= 0.60.0
 BuildRequires:  pkgconfig(cairo)
 BuildRequires:  pkgconfig(gdk-pixbuf-2.0)
 BuildRequires:  pkgconfig(json-c) >= 0.13
@@ -36,7 +29,7 @@ BuildRequires:  pkgconfig(scdoc)
 BuildRequires:  pkgconfig(wayland-client)
 BuildRequires:  pkgconfig(wayland-cursor)
 BuildRequires:  pkgconfig(wayland-egl)
-BuildRequires:  pkgconfig(wayland-server)
+BuildRequires:  pkgconfig(wayland-server) >= 1.20.0
 BuildRequires:  pkgconfig(wayland-protocols) >= 1.24
 BuildRequires:  (pkgconfig(wlroots) >= 0.15.0 with pkgconfig(wlroots) < 0.16)
 BuildRequires:  pkgconfig(xcb)
@@ -139,6 +132,9 @@ install -D -m755 -pv contrib/grimshot %{buildroot}%{_bindir}/grimshot
 %{_mandir}/man1/grimshot.1*
 
 %changelog
+* Wed Jun 01 2022 Aleksei Bavshin <alebastr@fedoraproject.org> - 1.7-2
+- Drop patches for wayland 1.19/meson 0.59 compatibility
+
 * Sat Jan 22 2022 Aleksei Bavshin <alebastr@fedoraproject.org> - 1.7-1
 - Update to 1.7
 - Add scripts from contrib to the package
