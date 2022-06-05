@@ -12,6 +12,7 @@ Source1:        %{url}/releases/download/%{tag}/%{name}-%{tag}.tar.gz.sig
 Source2:        https://emersion.fr/.well-known/openpgpkey/hu/dj3498u4hyyarh35rkjfnghbjxug6b19#/gpgkey-0FDE7BE0E88F5E48.gpg
 # Minimal configuration file for headless or buildroot use
 Source100:      config.minimal
+Source101:      README.md
 
 # Fixes crash when destroying layer surfaces on removed output
 Patch0:         %{url}/pull/6820.patch#/sway-1.7-layer_shell-keep-output-non-NULL-wherever-possible.patch
@@ -148,6 +149,9 @@ interface.
 %meson_install
 # Install minimal configuration file
 install -D -m644 -pv %{SOURCE100} %{buildroot}%{_sysconfdir}/sway/config.minimal
+# install the documentation
+install -D -m644 -pv README.md    %{buildroot}%{_pkgdocdir}/README.md
+install -D -m644 -pv %{SOURCE101} %{buildroot}%{_pkgdocdir}/README.Fedora
 # Create directory for extra config snippets
 install -d -m755 -pv %{buildroot}%{_sysconfdir}/sway/config.d
 
@@ -160,7 +164,7 @@ install -D -m755 -pv contrib/grimshot %{buildroot}%{_bindir}/grimshot
 
 %files
 %license LICENSE
-%doc README.md
+%doc %{_pkgdocdir}
 %dir %{_sysconfdir}/sway
 %dir %{_sysconfdir}/sway/config.d
 %{_mandir}/man1/sway*
