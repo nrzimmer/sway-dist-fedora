@@ -1,0 +1,178 @@
+From 4db1e52dd808eb8c04cbc908fc6fa84ff8a134ad Mon Sep 17 00:00:00 2001
+From: Thomas Hebb <tommyhebb@gmail.com>
+Date: Sun, 6 Feb 2022 12:21:27 -0800
+Subject: [PATCH] layer_shell: keep output non-NULL wherever possible
+
+Our layer shell implementation assigns every layer surface to an output
+on creation. It tracks this output using the output field on the
+underlying wlr_layer_surface_v1 structure. As such, much of the existing
+code assumes that output is always non-NULL and omits NULL checks
+accordingly.
+
+However, there are currently two cases where we destroy a
+sway_layer_surface and output is NULL. The first is when we can't find
+an output to assign the surface to and destroy it immediately after
+creation. The second is when we destroy a surface in response to its
+output getting destroyed, as we set output to NULL in
+handle_output_destroy() before we call wlr_layer_surface_v1_destroy(),
+which is what calls the appropriate unmap and destroy callbacks.
+
+The former case doesn't cause any problems, since we haven't even
+allocated a sway_layer_surface at that point or registered any
+callbacks. The latter case, however, currently triggers a crash (#6120)
+if a popup is visible, since our popup_handle_unmap() implementation
+can't handle a NULL output.
+
+To fix this issue, keep output set until right before we free the
+sway_layer_surface. All we need to do is remove some of the cleanup
+logic from handle_output_destroy(), since as of commit c9060bcc12d0
+("layer-shell: replace close() with destroy()") that same logic is
+guaranteed to be happen later when wlroots calls handle_destroy() as
+part of wlr_layer_surface_v1_destroy().
+
+This lets us remove some NULL checks from other unmap/destroy callbacks,
+which is nice. We also don't need to check that the wlr_output points to
+a valid sway_output anymore, since we unset that pointer after disabling
+the output as of commit a0bbe67076b8 ("Address emersions comments on
+output re-enabling") Just to be safe, I've added assertions that the
+wlr_output is non-NULL wherever we use it.
+
+Fixes #6120.
+---
+ sway/desktop/layer_shell.c | 53 +++++++++++++++++---------------------
+ 1 file changed, 24 insertions(+), 29 deletions(-)
+
+diff --git a/sway/desktop/layer_shell.c b/sway/desktop/layer_shell.c
+index 1250415e52..159f333600 100644
+--- a/sway/desktop/layer_shell.c
++++ b/sway/desktop/layer_shell.c
+@@ -271,10 +271,6 @@ static void handle_output_destroy(struct wl_listener *listener, void *data) {
+ 		wl_resource_get_client(sway_layer->layer_surface->resource);
+ 	bool set_focus = seat->exclusive_client == client;
+ 
+-	wl_list_remove(&sway_layer->output_destroy.link);
+-	wl_list_remove(&sway_layer->link);
+-	wl_list_init(&sway_layer->link);
+-
+ 	if (set_focus) {
+ 		struct sway_layer_surface *layer =
+ 			find_mapped_layer_by_client(client, sway_layer->layer_surface->output);
+@@ -283,7 +279,6 @@ static void handle_output_destroy(struct wl_listener *listener, void *data) {
+ 		}
+ 	}
+ 
+-	sway_layer->layer_surface->output = NULL;
+ 	wlr_layer_surface_v1_destroy(sway_layer->layer_surface);
+ }
+ 
+@@ -292,10 +287,7 @@ static void handle_surface_commit(struct wl_listener *listener, void *data) {
+ 		wl_container_of(listener, layer, surface_commit);
+ 	struct wlr_layer_surface_v1 *layer_surface = layer->layer_surface;
+ 	struct wlr_output *wlr_output = layer_surface->output;
+-	if (wlr_output == NULL) {
+-		return;
+-	}
+-
++	sway_assert(wlr_output, "wlr_layer_surface_v1 has null output");
+ 	struct sway_output *output = wlr_output->data;
+ 	struct wlr_box old_extent = layer->extent;
+ 
+@@ -342,13 +334,8 @@ static void unmap(struct sway_layer_surface *sway_layer) {
+ 	cursor_rebase_all();
+ 
+ 	struct wlr_output *wlr_output = sway_layer->layer_surface->output;
+-	if (wlr_output == NULL) {
+-		return;
+-	}
++	sway_assert(wlr_output, "wlr_layer_surface_v1 has null output");
+ 	struct sway_output *output = wlr_output->data;
+-	if (output == NULL) {
+-		return;
+-	}
+ 	output_damage_surface(output, sway_layer->geo.x, sway_layer->geo.y,
+ 		sway_layer->layer_surface->surface, true);
+ }
+@@ -376,22 +363,24 @@ static void handle_destroy(struct wl_listener *listener, void *data) {
+ 	wl_list_remove(&sway_layer->surface_commit.link);
+ 	wl_list_remove(&sway_layer->new_popup.link);
+ 	wl_list_remove(&sway_layer->new_subsurface.link);
+-	if (sway_layer->layer_surface->output != NULL) {
+-		struct sway_output *output = sway_layer->layer_surface->output->data;
+-		if (output != NULL) {
+-			arrange_layers(output);
+-			transaction_commit_dirty();
+-		}
+-		wl_list_remove(&sway_layer->output_destroy.link);
+-		sway_layer->layer_surface->output = NULL;
+-	}
++
++	struct wlr_output *wlr_output = sway_layer->layer_surface->output;
++	sway_assert(wlr_output, "wlr_layer_surface_v1 has null output");
++	struct sway_output *output = wlr_output->data;
++	arrange_layers(output);
++	transaction_commit_dirty();
++	wl_list_remove(&sway_layer->output_destroy.link);
++	sway_layer->layer_surface->output = NULL;
++
+ 	free(sway_layer);
+ }
+ 
+ static void handle_map(struct wl_listener *listener, void *data) {
+ 	struct sway_layer_surface *sway_layer = wl_container_of(listener,
+ 			sway_layer, map);
+-	struct sway_output *output = sway_layer->layer_surface->output->data;
++	struct wlr_output *wlr_output = sway_layer->layer_surface->output;
++	sway_assert(wlr_output, "wlr_layer_surface_v1 has null output");
++	struct sway_output *output = wlr_output->data;
+ 	output_damage_surface(output, sway_layer->geo.x, sway_layer->geo.y,
+ 		sway_layer->layer_surface->surface, true);
+ 	wlr_surface_send_enter(sway_layer->layer_surface->surface,
+@@ -409,9 +398,7 @@ static void subsurface_damage(struct sway_layer_subsurface *subsurface,
+ 		bool whole) {
+ 	struct sway_layer_surface *layer = subsurface->layer_surface;
+ 	struct wlr_output *wlr_output = layer->layer_surface->output;
+-	if (!wlr_output) {
+-		return;
+-	}
++	sway_assert(wlr_output, "wlr_layer_surface_v1 has null output");
+ 	struct sway_output *output = wlr_output->data;
+ 	int ox = subsurface->wlr_subsurface->current.x + layer->geo.x;
+ 	int oy = subsurface->wlr_subsurface->current.y + layer->geo.y;
+@@ -514,6 +501,7 @@ static void popup_damage(struct sway_layer_popup *layer_popup, bool whole) {
+ 		}
+ 	}
+ 	struct wlr_output *wlr_output = layer->layer_surface->output;
++	sway_assert(wlr_output, "wlr_layer_surface_v1 has null output");
+ 	struct sway_output *output = wlr_output->data;
+ 	output_damage_surface(output, ox, oy, surface, whole);
+ }
+@@ -522,6 +510,7 @@ static void popup_handle_map(struct wl_listener *listener, void *data) {
+ 	struct sway_layer_popup *popup = wl_container_of(listener, popup, map);
+ 	struct sway_layer_surface *layer = popup_get_layer(popup);
+ 	struct wlr_output *wlr_output = layer->layer_surface->output;
++	sway_assert(wlr_output, "wlr_layer_surface_v1 has null output");
+ 	wlr_surface_send_enter(popup->wlr_popup->base->surface, wlr_output);
+ 	popup_damage(popup, true);
+ }
+@@ -551,7 +540,9 @@ static void popup_unconstrain(struct sway_layer_popup *popup) {
+ 	struct sway_layer_surface *layer = popup_get_layer(popup);
+ 	struct wlr_xdg_popup *wlr_popup = popup->wlr_popup;
+ 
+-	struct sway_output *output = layer->layer_surface->output->data;
++	struct wlr_output *wlr_output = layer->layer_surface->output;
++	sway_assert(wlr_output, "wlr_layer_surface_v1 has null output");
++	struct sway_output *output = wlr_output->data;
+ 
+ 	// the output box expressed in the coordinate system of the toplevel parent
+ 	// of the popup
+@@ -643,6 +634,10 @@ void handle_layer_shell_surface(struct wl_listener *listener, void *data) {
+ 				sway_log(SWAY_ERROR,
+ 						"no output to auto-assign layer surface '%s' to",
+ 						layer_surface->namespace);
++				// Note that layer_surface->output can be NULL
++				// here, but none of our destroy callbacks are
++				// registered yet so we don't have to make them
++				// handle that case.
+ 				wlr_layer_surface_v1_destroy(layer_surface);
+ 				return;
+ 			}

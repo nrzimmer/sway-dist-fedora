@@ -11,6 +11,9 @@ Source1:        %{url}/releases/download/%{tag}/%{name}-%{tag}.tar.gz.sig
 # 0FDE7BE0E88F5E48: emersion <contact@emersion.fr>
 Source2:        https://emersion.fr/.well-known/openpgpkey/hu/dj3498u4hyyarh35rkjfnghbjxug6b19#/gpgkey-0FDE7BE0E88F5E48.gpg
 
+# Fixes crash when destroying layer surfaces on removed output
+Patch0:         %{url}/pull/6820.patch#/sway-1.7-layer_shell-keep-output-non-NULL-wherever-possible.patch
+
 BuildRequires:  gcc-c++
 BuildRequires:  gnupg2
 BuildRequires:  meson >= 0.60.0
@@ -149,6 +152,7 @@ install -D -m755 -pv contrib/grimshot %{buildroot}%{_bindir}/grimshot
 * Wed Jun 01 2022 Aleksei Bavshin <alebastr@fedoraproject.org> - 1.7-2
 - Drop patches for wayland 1.19/meson 0.59 compatibility
 - Split package with the default wallpapers
+- Add upstream patch to fix crash in layer-shell code
 
 * Sat Jan 22 2022 Aleksei Bavshin <alebastr@fedoraproject.org> - 1.7-1
 - Update to 1.7
