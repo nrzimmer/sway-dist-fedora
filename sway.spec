@@ -175,7 +175,6 @@ install -D -m755 -pv contrib/grimshot %{buildroot}%{_bindir}/grimshot
 %{_bindir}/swaymsg
 %{_bindir}/swaynag
 %{_datadir}/sway
-%{_datadir}/wayland-sessions/sway.desktop
 %dir %{_datadir}/zsh
 %dir %{_datadir}/zsh/site-functions
 %{_datadir}/zsh/site-functions/_sway*
@@ -188,6 +187,7 @@ install -D -m755 -pv contrib/grimshot %{buildroot}%{_bindir}/grimshot
 
 %files config-upstream
 %config(noreplace) %{_sysconfdir}/sway/config
+%{_datadir}/wayland-sessions/sway.desktop
 
 %files config-minimal
 %config(noreplace) %{_sysconfdir}/sway/config.minimal
@@ -203,6 +203,7 @@ install -D -m755 -pv contrib/grimshot %{buildroot}%{_bindir}/grimshot
 %changelog
 * Mon Nov 14 2022 Aleksei Bavshin <alebastr@fedoraproject.org> - 1.7-5
 - Create two sway-config- packages with different sets of dependencies.
+- Move sway.desktop to sway-config-upstream
 
 * Mon Nov 14 2022 Aleksei Bavshin <alebastr@fedoraproject.org> - 1.7-4
 - Add upstream patch to fix crash in xdg-activation

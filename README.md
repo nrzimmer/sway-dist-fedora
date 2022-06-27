@@ -55,4 +55,7 @@ Requires:       waybar
 
 %files
 %config(noreplace) %{_sysconfdir}/sway/config
+# Session file also belongs to the configuration subpackage;
+# Otherwise we won't be able to add a wrapper script or set additional properties
+%{_datadir}/wayland-sessions/sway.desktop
 ```
