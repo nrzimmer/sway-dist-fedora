@@ -2,7 +2,7 @@
 
 Name:           sway
 Version:        1.7
-Release:        2%{?dist}
+Release:        3%{?dist}
 Summary:        i3-compatible window manager for Wayland
 License:        MIT
 URL:            https://github.com/swaywm/sway
@@ -149,6 +149,9 @@ install -D -m755 -pv contrib/grimshot %{buildroot}%{_bindir}/grimshot
 %{_mandir}/man1/grimshot.1*
 
 %changelog
+* Sat Jul 23 2022 Fedora Release Engineering <releng@fedoraproject.org> - 1.7-3
+- Rebuilt for https://fedoraproject.org/wiki/Fedora_37_Mass_Rebuild
+
 * Wed Jun 01 2022 Aleksei Bavshin <alebastr@fedoraproject.org> - 1.7-2
 - Drop patches for wayland 1.19/meson 0.59 compatibility
 - Split package with the default wallpapers
