@@ -1,8 +1,8 @@
-%global tag     1.7
+%global tag     1.8-rc1
 
 Name:           sway
-Version:        1.7
-Release:        5%{?dist}
+Version:        1.8~rc1
+Release:        1%{?dist}
 Summary:        i3-compatible window manager for Wayland
 License:        MIT
 URL:            https://github.com/swaywm/sway
@@ -10,37 +10,35 @@ Source0:        %{url}/releases/download/%{tag}/%{name}-%{tag}.tar.gz
 Source1:        %{url}/releases/download/%{tag}/%{name}-%{tag}.tar.gz.sig
 # 0FDE7BE0E88F5E48: emersion <contact@emersion.fr>
 Source2:        https://emersion.fr/.well-known/openpgpkey/hu/dj3498u4hyyarh35rkjfnghbjxug6b19#/gpgkey-0FDE7BE0E88F5E48.gpg
+
 # Minimal configuration file for headless or buildroot use
 Source100:      config.minimal
 Source101:      README.md
-
-# Fixes crash when destroying layer surfaces on removed output
-Patch0:         %{url}/pull/6820.patch#/sway-1.7-layer_shell-keep-output-non-NULL-wherever-possible.patch
-# Fixes crash in xdg-activation code
-Patch1:         %{url}/pull/7168.patch#/sway-1.7-Fix-crash-in-xdg_activation_v1.c.patch
 
 BuildRequires:  gcc-c++
 BuildRequires:  gnupg2
 BuildRequires:  meson >= 0.60.0
 BuildRequires:  pkgconfig(cairo)
 BuildRequires:  pkgconfig(gdk-pixbuf-2.0)
+BuildRequires:  pkgconfig(glesv2)
 BuildRequires:  pkgconfig(json-c) >= 0.13
 BuildRequires:  pkgconfig(libdrm)
 BuildRequires:  pkgconfig(libevdev)
-BuildRequires:  pkgconfig(libinput) >= 1.6.0
-BuildRequires:  pkgconfig(libpcre)
+BuildRequires:  pkgconfig(libinput) >= 1.21.0
+BuildRequires:  pkgconfig(libpcre2-8)
 BuildRequires:  pkgconfig(libsystemd) >= 239
 BuildRequires:  pkgconfig(libudev)
 BuildRequires:  pkgconfig(pango)
 BuildRequires:  pkgconfig(pangocairo)
+BuildRequires:  pkgconfig(pixman-1)
 BuildRequires:  pkgconfig(scdoc)
 BuildRequires:  pkgconfig(wayland-client)
 BuildRequires:  pkgconfig(wayland-cursor)
-BuildRequires:  pkgconfig(wayland-egl)
-BuildRequires:  pkgconfig(wayland-server) >= 1.20.0
+BuildRequires:  pkgconfig(wayland-server) >= 1.21.0
 BuildRequires:  pkgconfig(wayland-protocols) >= 1.24
-BuildRequires:  (pkgconfig(wlroots) >= 0.15.0 with pkgconfig(wlroots) < 0.16)
+BuildRequires:  (pkgconfig(wlroots) >= 0.16.0 with pkgconfig(wlroots) < 0.17)
 BuildRequires:  pkgconfig(xcb)
+BuildRequires:  pkgconfig(xcb-icccm)
 BuildRequires:  pkgconfig(xkbcommon)
 
 # Require any of the available configuration packages;
@@ -201,7 +199,8 @@ install -D -m755 -pv contrib/grimshot %{buildroot}%{_bindir}/grimshot
 %{_mandir}/man1/grimshot.1*
 
 %changelog
-* Mon Nov 14 2022 Aleksei Bavshin <alebastr@fedoraproject.org> - 1.7-5
+* Fri Dec 02 2022 Aleksei Bavshin <alebastr@fedoraproject.org> - 1.8~rc1-1
+- Update to 1.8-rc1
 - Create two sway-config- packages with different sets of dependencies.
 - Move sway.desktop to sway-config-upstream
 
