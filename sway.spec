@@ -2,7 +2,7 @@
 
 Name:           sway
 Version:        1.9
-Release:        2%{?dist}
+Release:        3%{?dist}
 Summary:        i3-compatible window manager for Wayland
 License:        MIT
 URL:            https://github.com/swaywm/sway
@@ -183,6 +183,9 @@ install -d -m755 -pv %{buildroot}%{_sysconfdir}/sway/config.d
 %{_datadir}/backgrounds/sway
 
 %changelog
+* Sun Sep 29 2024 Aleksei Bavshin <alebastr@fedoraproject.org> - 1.9-3
+- Set Inhibit portal backend to 'none'
+
 * Sat Jul 20 2024 Fedora Release Engineering <releng@fedoraproject.org> - 1.9-2
 - Rebuilt for https://fedoraproject.org/wiki/Fedora_41_Mass_Rebuild
 
