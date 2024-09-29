@@ -1,8 +1,8 @@
-%global tag     1.9
+%global tag     1.10-rc1
 
 Name:           sway
-Version:        1.9
-Release:        3%{?dist}
+Version:        1.10~rc1
+Release:        1%{?dist}
 Summary:        i3-compatible window manager for Wayland
 License:        MIT
 URL:            https://github.com/swaywm/sway
@@ -31,7 +31,7 @@ BuildRequires:  pkgconfig(glesv2)
 BuildRequires:  pkgconfig(json-c) >= 0.13
 BuildRequires:  pkgconfig(libdrm)
 BuildRequires:  pkgconfig(libevdev)
-BuildRequires:  pkgconfig(libinput) >= 1.21.0
+BuildRequires:  pkgconfig(libinput) >= 1.26.0
 BuildRequires:  pkgconfig(libpcre2-8)
 BuildRequires:  pkgconfig(libsystemd) >= 239
 BuildRequires:  pkgconfig(libudev)
@@ -43,7 +43,7 @@ BuildRequires:  pkgconfig(wayland-client)
 BuildRequires:  pkgconfig(wayland-cursor)
 BuildRequires:  pkgconfig(wayland-server) >= 1.21.0
 BuildRequires:  pkgconfig(wayland-protocols) >= 1.24
-BuildRequires:  (pkgconfig(wlroots) >= 0.17.0 with pkgconfig(wlroots) < 0.18)
+BuildRequires:  pkgconfig(wlroots-0.18)
 BuildRequires:  pkgconfig(xcb)
 BuildRequires:  pkgconfig(xcb-icccm)
 BuildRequires:  pkgconfig(xkbcommon) >= 1.5.0
@@ -83,11 +83,8 @@ Requires:       xorg-x11-server-Xwayland
 Recommends:     foot
 # grim is the recommended way to take screenshots on sway 1.0+
 Recommends:     grim
-# wmenu is the default launcher in sway, but it still requires dmenu_path to work
-Recommends:     dmenu
+# wmenu is the default launcher in sway
 Recommends:     wmenu
-# In addition, xargs is recommended for use in such a launcher arrangement
-Recommends:     findutils
 # Install configs and scripts for better integration with systemd user session
 Recommends:     sway-systemd
 # Both utilities are suggested in the default configuration
@@ -132,7 +129,7 @@ Wallpaper collection provided with Sway
 %{gpgverify} --keyring='%{SOURCE2}' --signature='%{SOURCE1}' --data='%{SOURCE0}'
 %autosetup -N -n %{name}-%{tag}
 # apply unconditional patches
-%autopatch -p1 -M99
+#autopatch -p1 -M99
 # apply conditional patches
 
 %build
@@ -183,6 +180,9 @@ install -d -m755 -pv %{buildroot}%{_sysconfdir}/sway/config.d
 %{_datadir}/backgrounds/sway
 
 %changelog
+* Sun Sep 29 2024 Aleksei Bavshin <alebastr@fedoraproject.org> - 1.10~rc1-1
+- Update to 1.10-rc1
+
 * Sun Sep 29 2024 Aleksei Bavshin <alebastr@fedoraproject.org> - 1.9-3
 - Set Inhibit portal backend to 'none'
 
