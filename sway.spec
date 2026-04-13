@@ -93,7 +93,6 @@ Recommends:     swaylock
 
 # Minimal installation doesn't include Qt Wayland backend
 Recommends:     (qt5-qtwayland if qt5-qtbase-gui)
-Recommends:     (qt6-qtwayland if qt6-qtbase-gui)
 
 %description    config-upstream
 Upstream configuration for Sway.
