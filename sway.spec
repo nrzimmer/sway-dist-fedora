@@ -1,6 +1,6 @@
 Name:           sway
 Version:        1.12
-Release:        2%{?dist}
+Release:        2.icons%{?dist}
 Summary:        i3-compatible window manager for Wayland
 
 %global tag     %{gsub %{version} ~ -}
@@ -20,6 +20,8 @@ Source102:      README.md
 # Upstream patches
 
 # Fedora patches
+# Window icons in title bars (1.12-window-icons tag of github.com/nrzimmer/sway)
+Patch0001:      0001-Add-window-icons-to-title-bars.patch
 
 # Conditional patches
 
@@ -36,6 +38,7 @@ BuildRequires:  pkgconfig(libinput) >= 1.26.0
 BuildRequires:  pkgconfig(libpcre2-8)
 BuildRequires:  pkgconfig(libsystemd) >= 239
 BuildRequires:  pkgconfig(libudev)
+BuildRequires:  pkgconfig(librsvg-2.0) >= 2.46
 BuildRequires:  pkgconfig(pango)
 BuildRequires:  pkgconfig(pangocairo)
 BuildRequires:  pkgconfig(pixman-1)
@@ -46,6 +49,7 @@ BuildRequires:  pkgconfig(wayland-server) >= 1.21.0
 BuildRequires:  pkgconfig(wayland-protocols) >= 1.41
 BuildRequires:  pkgconfig(wlroots-0.20)
 BuildRequires:  pkgconfig(xcb)
+BuildRequires:  pkgconfig(xcb-ewmh)
 BuildRequires:  pkgconfig(xcb-icccm)
 BuildRequires:  pkgconfig(xkbcommon) >= 1.5.0
 
@@ -129,7 +133,7 @@ Wallpaper collection provided with Sway
 %{gpgverify} --keyring='%{SOURCE2}' --signature='%{SOURCE1}' --data='%{SOURCE0}'
 %autosetup -N -n %{name}-%{tag}
 # apply unconditional patches
-#autopatch -p1 -M99
+%autopatch -p1 -M99
 # apply conditional patches
 
 %build
@@ -180,6 +184,10 @@ install -d -m755 -pv %{buildroot}%{_sysconfdir}/sway/config.d
 %{_datadir}/backgrounds/sway
 
 %changelog
+* Mon Nov 23 2026 Natanael Rodrigo Zimmer <nrzimmer@gmail.com> - 1.12-2.icons
+- Add window icons in title bars patch (title_window_icon)
+- BuildRequires: librsvg2, xcb-ewmh
+
 * Fri Jul 17 2026 Fedora Release Engineering <releng@fedoraproject.org> - 1.12-2
 - Rebuilt for https://fedoraproject.org/wiki/Fedora_45_Mass_Rebuild
 

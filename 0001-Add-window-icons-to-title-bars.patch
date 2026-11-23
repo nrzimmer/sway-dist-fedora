@@ -1,0 +1,3417 @@
+From ed986fc76f2e091c8f94c63dc4ff4e29f4ff058d Mon Sep 17 00:00:00 2001
+From: Matt Mitchell <mattmitchell2718@gmail.com>
+Date: Thu, 8 Oct 2026 01:41:43 -0400
+Subject: [PATCH] Add window icons to title bars
+
+Add the i3 command `title_window_icon yes|no|toggle` and
+`title_window_icon padding|toggle <px>`, which shows the icon of a window
+in its title bar, next to the title. Like in i3, icons are off by default,
+and are typically enabled with `for_window [all] title_window_icon on`.
+
+The icon is, in order of preference:
+- the icon set by the client with xdg-toplevel-icon-v1, by name or as
+  pixel buffers of different sizes and scales,
+- the _NET_WM_ICON of X11 windows, fetched lazily when needed,
+- the icon of the application's desktop entry, matched by sandbox app ID,
+  app_id or X11 class/instance (desktop file ID, StartupWMClass, and a few
+  case-insensitive fallbacks),
+- the icon named after the app_id.
+
+Named icons are looked up following the XDG icon theme specification in
+the theme set with the new `title_window_icon_theme <name>` command,
+falling back to hicolor and pixmaps. Lookups use GTK's icon-theme.cache
+when it's up to date, and otherwise an index of the theme directories built
+once, so they don't need to probe hundreds of directories. Since icons are
+rendered at arbitrary sizes (the height of the title font), exact-size PNGs
+are preferred, then SVGs, then larger PNGs.
+
+PNG icons are loaded with cairo, SVG icons are rendered with librsvg (a new
+optional dependency), from memory so that GIO doesn't load GVfs modules into
+the compositor; only regular files are read. Icons are rendered at the scale
+of the outputs they're shown on, and rendered buffers are shared by all windows
+of an application. Lookup results are cached, and dropped on reload.
+
+Images provided by clients are only read when the icon is shown, and at most 8
+of them are kept, scaled down to 128px, so clients can't make sway allocate
+much memory.
+
+The icon size is advertised to clients with xdg-toplevel-icon-v1, and the
+padding is reported as `window_icon_padding` in the IPC tree, as in i3.
+
+Refs: https://github.com/swaywm/sway/issues/4882
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ include/sway/commands.h                 |   2 +
+ include/sway/config.h                   |   1 +
+ include/sway/desktop_entry.h            |  55 ++
+ include/sway/icon.h                     |  64 ++
+ include/sway/icon_theme.h               |  36 +
+ include/sway/server.h                   |   3 +
+ include/sway/sway_icon_node.h           |  24 +
+ include/sway/tree/container.h           |   6 +
+ include/sway/tree/view.h                |  40 ++
+ meson.build                             |   4 +
+ meson_options.txt                       |   1 +
+ sway/commands.c                         |   2 +
+ sway/commands/reload.c                  |   6 +
+ sway/commands/title_window_icon.c       |  65 ++
+ sway/commands/title_window_icon_theme.c |  35 +
+ sway/config.c                           |   9 +
+ sway/desktop/xdg_shell.c                | 105 +++
+ sway/desktop/xwayland.c                 |  97 +++
+ sway/desktop_entry.c                    | 394 +++++++++++
+ sway/icon.c                             | 589 ++++++++++++++++
+ sway/icon_theme.c                       | 891 ++++++++++++++++++++++++
+ sway/ipc-json.c                         |   5 +
+ sway/meson.build                        |   8 +
+ sway/server.c                           |  15 +
+ sway/sway-ipc.7.scd                     |   5 +
+ sway/sway.5.scd                         |  28 +
+ sway/sway_icon_node.c                   | 100 +++
+ sway/tree/container.c                   |  97 ++-
+ sway/tree/view.c                        |  66 ++
+ 29 files changed, 2738 insertions(+), 15 deletions(-)
+ create mode 100644 include/sway/desktop_entry.h
+ create mode 100644 include/sway/icon.h
+ create mode 100644 include/sway/icon_theme.h
+ create mode 100644 include/sway/sway_icon_node.h
+ create mode 100644 sway/commands/title_window_icon.c
+ create mode 100644 sway/commands/title_window_icon_theme.c
+ create mode 100644 sway/desktop_entry.c
+ create mode 100644 sway/icon.c
+ create mode 100644 sway/icon_theme.c
+ create mode 100644 sway/sway_icon_node.c
+
+diff --git a/include/sway/commands.h b/include/sway/commands.h
+index 389c382e..72b4b331 100644
+--- a/include/sway/commands.h
++++ b/include/sway/commands.h
+@@ -189,6 +189,8 @@ sway_cmd cmd_tiling_drag;
+ sway_cmd cmd_tiling_drag_threshold;
+ sway_cmd cmd_title_align;
+ sway_cmd cmd_title_format;
++sway_cmd cmd_title_window_icon;
++sway_cmd cmd_title_window_icon_theme;
+ sway_cmd cmd_titlebar_border_thickness;
+ sway_cmd cmd_titlebar_padding;
+ sway_cmd cmd_unbindcode;
+diff --git a/include/sway/config.h b/include/sway/config.h
+index 16b822fe..b7710e57 100644
+--- a/include/sway/config.h
++++ b/include/sway/config.h
+@@ -524,6 +524,7 @@ struct sway_config {
+ 	int titlebar_border_thickness;
+ 	int titlebar_h_padding;
+ 	int titlebar_v_padding;
++	char *title_window_icon_theme; // NULL to only use the hicolor theme
+ 	size_t urgent_timeout;
+ 	enum sway_fowa focus_on_window_activation;
+ 	enum sway_popup_during_fullscreen popup_during_fullscreen;
+diff --git a/include/sway/desktop_entry.h b/include/sway/desktop_entry.h
+new file mode 100644
+index 00000000..dc0cbdbd
+--- /dev/null
++++ b/include/sway/desktop_entry.h
+@@ -0,0 +1,55 @@
++#ifndef _SWAY_DESKTOP_ENTRY_H
++#define _SWAY_DESKTOP_ENTRY_H
++#include <stdbool.h>
++#include <stddef.h>
++#include <sys/stat.h>
++#include "list.h"
++
++/**
++ * Opens a file for reading if it's a regular file of at most max_size bytes
++ * (opening a FIFO would block), filling st if not NULL. Returns -1 otherwise.
++ */
++int open_regular_file(const char *path, size_t max_size, struct stat *st);
++
++/**
++ * Reads a whole regular file of at most max_size bytes, see open_regular_file.
++ * Returns the newly allocated contents, or NULL on failure.
++ */
++char *read_regular_file(const char *path, size_t max_size, size_t *len,
++		struct stat *st);
++
++/**
++ * Returns $XDG_DATA_HOME followed by the directories in $XDG_DATA_DIRS,
++ * applying the defaults from the base directory specification. Free with
++ * list_free_items_and_destroy().
++ */
++list_t *xdg_data_dirs(void);
++
++/**
++ * Called for every key in a desktop entry file. Return false to stop parsing.
++ */
++typedef bool (*desktop_file_handler_t)(void *data, const char *group,
++		const char *key, const char *value);
++
++/**
++ * Parses a file in the XDG desktop entry format, which is also used by icon
++ * theme index files. Returns false if the file couldn't be read.
++ */
++bool desktop_file_parse(const char *path, desktop_file_handler_t handler,
++		void *data);
++
++/**
++ * Finds the icon (the value of its Icon key) of the desktop entry matching an
++ * application identifier: a Wayland app_id, a sandbox app ID or an X11 class.
++ * Returns a newly allocated string, or NULL if no matching desktop entry with
++ * an icon was found.
++ */
++char *desktop_entry_find_icon(const char *app_id);
++
++/**
++ * Forgets all desktop entries read so far, so that they are read again on the
++ * next lookup.
++ */
++void desktop_entries_reset(void);
++
++#endif
+diff --git a/include/sway/icon.h b/include/sway/icon.h
+new file mode 100644
+index 00000000..c8abb1c0
+--- /dev/null
++++ b/include/sway/icon.h
+@@ -0,0 +1,64 @@
++#ifndef _SWAY_ICON_H
++#define _SWAY_ICON_H
++#include <cairo.h>
++#include <stdbool.h>
++#include <stddef.h>
++#include "list.h"
++
++struct wlr_buffer;
++
++/**
++ * A reference-counted icon, which can be rendered at any size: either an icon
++ * from the icon theme, an image file, or pixel data provided by a client.
++ */
++struct sway_icon;
++
++/**
++ * Looks up an icon by name in the configured icon theme. Returns NULL if
++ * there's no such icon.
++ */
++struct sway_icon *sway_icon_from_name(const char *name);
++
++/**
++ * Creates an icon from images of different sizes, typically provided by a
++ * client. Takes ownership of the list and of the cairo image surfaces in it.
++ */
++struct sway_icon *sway_icon_from_images(list_t *images);
++
++/**
++ * Icons are only shown in title bars, so we keep only a few images of the ones
++ * a client provides: given their sizes, sets keep[i] for the images to copy
++ * with sway_icon_copy_image().
++ */
++void sway_icon_choose_images(const int *sizes, size_t n, bool *keep);
++
++/**
++ * Copies an image provided by a client, scaling it down if it's larger than
++ * needed. Returns NULL on failure.
++ */
++cairo_surface_t *sway_icon_copy_image(cairo_surface_t *image);
++
++/**
++ * Finds the icon of an application, given its app_id, sandbox app ID or X11
++ * class: the icon of its desktop entry if there is one, or else the icon named
++ * after it. Returns NULL if no icon was found.
++ */
++struct sway_icon *sway_icon_for_app(const char *app_id);
++
++struct sway_icon *sway_icon_ref(struct sway_icon *icon);
++
++void sway_icon_unref(struct sway_icon *icon);
++
++/**
++ * Returns the icon rendered at size×size pixels, or NULL on failure. Rendered
++ * buffers are cached: the buffer belongs to the icon, lock it to keep it.
++ */
++struct wlr_buffer *sway_icon_get_buffer(struct sway_icon *icon, int size);
++
++/**
++ * Forgets all cached icons and lookup results, and the icon themes and desktop
++ * entries read so far.
++ */
++void sway_icons_reset(void);
++
++#endif
+diff --git a/include/sway/icon_theme.h b/include/sway/icon_theme.h
+new file mode 100644
+index 00000000..510bb90f
+--- /dev/null
++++ b/include/sway/icon_theme.h
+@@ -0,0 +1,36 @@
++#ifndef _SWAY_ICON_THEME_H
++#define _SWAY_ICON_THEME_H
++#include <stdbool.h>
++
++enum icon_file_format {
++	ICON_FORMAT_PNG,
++	ICON_FORMAT_SVG,
++};
++
++struct icon_file {
++	char *path;
++	enum icon_file_format format;
++	int size; // the size the image was made for in pixels, or 0 if unknown
++};
++
++/**
++ * Finds the image file that best represents the icon `name` at `size`×`size`
++ * pixels, following the XDG icon theme specification: the icon is looked up
++ * in `theme` (which may be NULL), the themes it inherits from, the hicolor
++ * theme and finally in the fallback directories (e.g. /usr/share/pixmaps).
++ *
++ * Returns false if there is no such icon. On success, release the file with
++ * icon_file_finish().
++ */
++bool icon_theme_find(const char *theme, const char *name, int size,
++		struct icon_file *file);
++
++void icon_file_finish(struct icon_file *file);
++
++/**
++ * Forgets all icon themes loaded so far, so that changes on disk are picked
++ * up by the next lookups.
++ */
++void icon_themes_reset(void);
++
++#endif
+diff --git a/include/sway/server.h b/include/sway/server.h
+index 8c811488..e32801b3 100644
+--- a/include/sway/server.h
++++ b/include/sway/server.h
+@@ -121,6 +121,9 @@ struct sway_server {
+ 
+ 	struct wl_listener xdg_toplevel_tag_manager_v1_set_tag;
+ 
++	struct wlr_xdg_toplevel_icon_manager_v1 *xdg_toplevel_icon_manager_v1;
++	struct wl_listener xdg_toplevel_icon_manager_v1_set_icon;
++
+ 	struct wl_listener request_set_cursor_shape;
+ 
+ 	struct wlr_tearing_control_manager_v1 *tearing_control_v1;
+diff --git a/include/sway/sway_icon_node.h b/include/sway/sway_icon_node.h
+new file mode 100644
+index 00000000..467e390f
+--- /dev/null
++++ b/include/sway/sway_icon_node.h
+@@ -0,0 +1,24 @@
++#ifndef _SWAY_ICON_NODE_H
++#define _SWAY_ICON_NODE_H
++#include <wlr/types/wlr_scene.h>
++
++struct sway_icon;
++
++struct sway_icon_node {
++	int size;
++
++	struct wlr_scene_node *node;
++};
++
++/**
++ * Creates a scene node showing an icon of size×size logical pixels, rendered
++ * for the scale of the outputs it's on.
++ */
++struct sway_icon_node *sway_icon_node_create(struct wlr_scene_tree *parent,
++		struct sway_icon *icon, int size);
++
++void sway_icon_node_set_icon(struct sway_icon_node *node, struct sway_icon *icon);
++
++void sway_icon_node_set_size(struct sway_icon_node *node, int size);
++
++#endif
+diff --git a/include/sway/tree/container.h b/include/sway/tree/container.h
+index d8780544..63fe092d 100644
+--- a/include/sway/tree/container.h
++++ b/include/sway/tree/container.h
+@@ -79,6 +79,7 @@ struct sway_container {
+ 
+ 		struct sway_text_node *title_text;
+ 		struct sway_text_node *marks_text;
++		struct sway_icon_node *icon;
+ 	} title_bar;
+ 
+ 	struct {
+@@ -101,6 +102,11 @@ struct sway_container {
+ 
+ 	char *title_format;
+ 
++	// Whether to show the view's icon in the title bar, and the horizontal
++	// padding around it
++	bool title_window_icon;
++	int title_window_icon_padding;
++
+ 	enum sway_container_layout prev_split_layout;
+ 
+ 	// Whether stickiness has been enabled on this container. Use
+diff --git a/include/sway/tree/view.h b/include/sway/tree/view.h
+index 26148a92..7ecb2c79 100644
+--- a/include/sway/tree/view.h
++++ b/include/sway/tree/view.h
+@@ -13,6 +13,8 @@
+ #include "sway/input/seat.h"
+ 
+ struct sway_container;
++struct sway_icon;
++struct wlr_xdg_toplevel_icon_v1;
+ struct sway_xdg_decoration;
+ 
+ enum sway_view_type {
+@@ -60,6 +62,8 @@ struct sway_view_impl {
+ 	void (*close)(struct sway_view *view);
+ 	void (*close_popups)(struct sway_view *view);
+ 	void (*destroy)(struct sway_view *view);
++	// Updates client_icon_name and client_icon, if they're out of date
++	void (*fetch_client_icon)(struct sway_view *view);
+ };
+ 
+ struct sway_view {
+@@ -126,6 +130,14 @@ struct sway_view {
+ 
+ 	enum sway_view_tearing_mode tearing_mode;
+ 	enum wp_tearing_control_v1_presentation_hint tearing_hint;
++
++	// The icon set by the client, via xdg-toplevel-icon-v1 or _NET_WM_ICON
++	char *client_icon_name;
++	struct sway_icon *client_icon;
++
++	// The icon shown in the title bar, looked up when needed: see view_get_icon
++	struct sway_icon *icon;
++	bool icon_resolved;
+ };
+ 
+ struct sway_xdg_shell_view {
+@@ -134,6 +146,10 @@ struct sway_xdg_shell_view {
+ 	struct wlr_scene_tree *image_capture_tree;
+ 	char *tag;
+ 
++	// The icon set with xdg-toplevel-icon-v1, until it's read: see view_get_icon
++	struct wlr_xdg_toplevel_icon_v1 *pending_icon;
++	bool icon_outdated;
++
+ 	struct wl_listener commit;
+ 	struct wl_listener request_move;
+ 	struct wl_listener request_resize;
+@@ -169,6 +185,7 @@ struct sway_xwayland_view {
+ 	struct wl_listener set_window_type;
+ 	struct wl_listener set_hints;
+ 	struct wl_listener set_decorations;
++	struct wl_listener set_icon;
+ 	struct wl_listener associate;
+ 	struct wl_listener dissociate;
+ 	struct wl_listener map;
+@@ -177,6 +194,8 @@ struct sway_xwayland_view {
+ 	struct wl_listener override_redirect;
+ 
+ 	struct wl_listener surface_tree_destroy;
++
++	bool icon_outdated; // _NET_WM_ICON needs to be fetched again
+ };
+ 
+ struct sway_xwayland_unmanaged {
+@@ -332,6 +351,25 @@ struct sway_view *view_from_wlr_surface(struct wlr_surface *surface);
+ 
+ void view_update_app_id(struct sway_view *view);
+ 
++/**
++ * Returns the icon to show in the view's title bar, or NULL if there is none.
++ * The icon is looked up when it's first needed after it may have changed.
++ */
++struct sway_icon *view_get_icon(struct sway_view *view);
++
++/**
++ * Sets the icon provided by the client: an icon name and images of different
++ * sizes, taking ownership of the list of cairo surfaces. Both may be NULL.
++ * Call view_update_icon() afterwards.
++ */
++void view_set_client_icon(struct sway_view *view, const char *name,
++	list_t *images);
++
++/**
++ * Marks the view's icon as possibly changed, and updates the title bar.
++ */
++void view_update_icon(struct sway_view *view);
++
+ /**
+  * Re-read the view's title property and update any relevant title bars.
+  * The force argument makes it recreate the title bars even if the title hasn't
+@@ -369,4 +407,6 @@ bool view_can_tear(struct sway_view *view);
+ 
+ void xdg_toplevel_tag_manager_v1_handle_set_tag(struct wl_listener *listener, void *data);
+ 
++void xdg_toplevel_icon_manager_v1_handle_set_icon(struct wl_listener *listener, void *data);
++
+ #endif
+diff --git a/meson.build b/meson.build
+index ad26a5a5..e2114ebe 100644
+--- a/meson.build
++++ b/meson.build
+@@ -71,6 +71,7 @@ cairo = dependency('cairo')
+ pango = dependency('pango')
+ pangocairo = dependency('pangocairo')
+ gdk_pixbuf = dependency('gdk-pixbuf-2.0', required: get_option('gdk-pixbuf'))
++librsvg = dependency('librsvg-2.0', version: '>=2.46', required: get_option('librsvg'))
+ pixman = dependency('pixman-1')
+ libevdev = dependency('libevdev')
+ libinput = wlroots_features['libinput_backend'] ? dependency('libinput', version: '>=1.26.0') : null_dep
+@@ -80,6 +81,7 @@ libudev = wlroots_features['libinput_backend'] ? dependency('libudev') : null_de
+ math = cc.find_library('m')
+ rt = cc.find_library('rt')
+ xcb_icccm = wlroots_features['xwayland'] ? dependency('xcb-icccm') : null_dep
++xcb_ewmh = wlroots_features['xwayland'] ? dependency('xcb-ewmh') : null_dep
+ threads = dependency('threads') # for pthread_setschedparam and pthread_atfork
+ 
+ if get_option('sd-bus-provider') == 'auto'
+@@ -106,6 +108,7 @@ have_tray = (not get_option('tray').disabled()) and tray_deps_found
+ conf_data = configuration_data()
+ 
+ conf_data.set10('HAVE_GDK_PIXBUF', gdk_pixbuf.found())
++conf_data.set10('HAVE_LIBRSVG', librsvg.found())
+ conf_data.set10('HAVE_LIBSYSTEMD', sdbus.found() and sdbus.name() == 'libsystemd')
+ conf_data.set10('HAVE_LIBELOGIND', sdbus.found() and sdbus.name() == 'libelogind')
+ conf_data.set10('HAVE_BASU', sdbus.found() and sdbus.name() == 'basu')
+@@ -243,6 +246,7 @@ subdir('completions')
+ 
+ summary({
+ 	'gdk-pixbuf': gdk_pixbuf.found(),
++	'librsvg': librsvg.found(),
+ 	'tray': have_tray,
+ 	'man-pages': scdoc.found(),
+ }, bool_yn: true)
+diff --git a/meson_options.txt b/meson_options.txt
+index 506ecc9a..36751dee 100644
+--- a/meson_options.txt
++++ b/meson_options.txt
+@@ -6,5 +6,6 @@ option('swaybar', type: 'boolean', value: true, description: 'Enable support for
+ option('swaynag', type: 'boolean', value: true, description: 'Enable support for swaynag')
+ option('tray', type: 'feature', value: 'auto', description: 'Enable support for swaybar tray')
+ option('gdk-pixbuf', type: 'feature', value: 'auto', description: 'Enable support for more image formats in swaybar tray')
++option('librsvg', type: 'feature', value: 'auto', description: 'Enable support for SVG window icons in title bars')
+ option('man-pages', type: 'feature', value: 'auto', description: 'Generate and install man pages')
+ option('sd-bus-provider', type: 'combo', choices: ['auto', 'libsystemd', 'libelogind', 'basu'], value: 'auto', description: 'Provider of the sd-bus library')
+diff --git a/sway/commands.c b/sway/commands.c
+index c2c12ee6..12320531 100644
+--- a/sway/commands.c
++++ b/sway/commands.c
+@@ -89,6 +89,7 @@ static const struct cmd_handler handlers[] = {
+ 	{ "tiling_drag", cmd_tiling_drag },
+ 	{ "tiling_drag_threshold", cmd_tiling_drag_threshold },
+ 	{ "title_align", cmd_title_align },
++	{ "title_window_icon_theme", cmd_title_window_icon_theme },
+ 	{ "titlebar_border_thickness", cmd_titlebar_border_thickness },
+ 	{ "titlebar_padding", cmd_titlebar_padding },
+ 	{ "unbindcode", cmd_unbindcode },
+@@ -138,6 +139,7 @@ static const struct cmd_handler command_handlers[] = {
+ 	{ "sticky", cmd_sticky },
+ 	{ "swap", cmd_swap },
+ 	{ "title_format", cmd_title_format },
++	{ "title_window_icon", cmd_title_window_icon },
+ 	{ "unmark", cmd_unmark },
+ 	{ "urgent", cmd_urgent },
+ };
+diff --git a/sway/commands/reload.c b/sway/commands/reload.c
+index 6c0aac26..fa3e85d1 100644
+--- a/sway/commands/reload.c
++++ b/sway/commands/reload.c
+@@ -1,6 +1,7 @@
+ #include <string.h>
+ #include "sway/commands.h"
+ #include "sway/config.h"
++#include "sway/icon.h"
+ #include "sway/ipc-server.h"
+ #include "sway/server.h"
+ #include "sway/tree/arrange.h"
+@@ -9,6 +10,9 @@
+ #include "log.h"
+ 
+ static void title_bar_update_iterator(struct sway_container *con, void *data) {
++	if (con->view) {
++		view_update_icon(con->view);
++	}
+ 	container_update_title_bar(con);
+ }
+ 
+@@ -46,6 +50,8 @@ static void do_reload(void *data) {
+ 	}
+ 	list_free_items_and_destroy(bar_ids);
+ 
++	// Pick up changes to the icon theme setting and to icons on disk
++	sway_icons_reset();
+ 	root_for_each_container(title_bar_update_iterator, NULL);
+ 
+ 	arrange_root();
+diff --git a/sway/commands/title_window_icon.c b/sway/commands/title_window_icon.c
+new file mode 100644
+index 00000000..3f7665b2
+--- /dev/null
++++ b/sway/commands/title_window_icon.c
+@@ -0,0 +1,65 @@
++#include <stdlib.h>
++#include <string.h>
++#include <strings.h>
++#include "sway/commands.h"
++#include "sway/config.h"
++#include "sway/tree/container.h"
++#include "util.h"
++
++static const char expected_syntax[] =
++	"Expected 'title_window_icon yes|no|toggle' or "
++	"'title_window_icon padding|toggle <px>'";
++
++static bool parse_padding(int argc, char **argv, int *padding) {
++	if (argc < 1 || argc > 2 || (argc == 2 && strcmp(argv[1], "px") != 0)) {
++		return false;
++	}
++	char *end;
++	long value = strtol(argv[0], &end, 10);
++	if (end == argv[0] || (*end && strcmp(end, "px") != 0) ||
++			(*end && argc == 2) || value < 0 || value > 1000) {
++		return false;
++	}
++	*padding = value;
++	return true;
++}
++
++struct cmd_results *cmd_title_window_icon(int argc, char **argv) {
++	struct cmd_results *error = NULL;
++	if ((error = checkarg(argc, "title_window_icon", EXPECTED_AT_LEAST, 1))) {
++		return error;
++	}
++	struct sway_container *container = config->handler_context.container;
++	if (!container) {
++		return cmd_results_new(CMD_INVALID,
++			"Only valid containers can have a title_window_icon");
++	}
++
++	int padding = -1;
++	if (strcasecmp(argv[0], "padding") == 0) {
++		if (!parse_padding(argc - 1, argv + 1, &padding)) {
++			return cmd_results_new(CMD_INVALID, expected_syntax);
++		}
++		container->title_window_icon = true;
++		container->title_window_icon_padding = padding;
++	} else if (strcasecmp(argv[0], "toggle") == 0) {
++		if (argc > 1 && !parse_padding(argc - 1, argv + 1, &padding)) {
++			return cmd_results_new(CMD_INVALID, expected_syntax);
++		}
++		container->title_window_icon = !container->title_window_icon;
++		if (padding >= 0) {
++			container->title_window_icon_padding = padding;
++		}
++	} else {
++		if (argc > 1) {
++			return cmd_results_new(CMD_INVALID, expected_syntax);
++		}
++		// Like in i3, this resets the padding
++		container->title_window_icon =
++			parse_boolean(argv[0], container->title_window_icon);
++		container->title_window_icon_padding = 0;
++	}
++
++	container_arrange_title_bar(container);
++	return cmd_results_new(CMD_SUCCESS, NULL);
++}
+diff --git a/sway/commands/title_window_icon_theme.c b/sway/commands/title_window_icon_theme.c
+new file mode 100644
+index 00000000..a435e4f0
+--- /dev/null
++++ b/sway/commands/title_window_icon_theme.c
+@@ -0,0 +1,35 @@
++#include <stdlib.h>
++#include <string.h>
++#include "sway/commands.h"
++#include "sway/config.h"
++#include "sway/icon.h"
++#include "sway/tree/root.h"
++#include "sway/tree/view.h"
++
++static void update_icon_iterator(struct sway_container *con, void *data) {
++	if (con->view) {
++		view_update_icon(con->view);
++	}
++}
++
++struct cmd_results *cmd_title_window_icon_theme(int argc, char **argv) {
++	struct cmd_results *error = NULL;
++	if ((error = checkarg(argc, "title_window_icon_theme", EXPECTED_EQUAL_TO, 1))) {
++		return error;
++	}
++
++	char *theme = strdup(argv[0]);
++	if (!theme) {
++		return cmd_results_new(CMD_FAILURE, "Unable to allocate resource");
++	}
++	free(config->title_window_icon_theme);
++	config->title_window_icon_theme = theme;
++
++	// When the config is being read, icons are updated after reloading
++	if (!config->reading) {
++		sway_icons_reset();
++		root_for_each_container(update_icon_iterator, NULL);
++	}
++
++	return cmd_results_new(CMD_SUCCESS, NULL);
++}
+diff --git a/sway/config.c b/sway/config.c
+index d579022d..82279708 100644
+--- a/sway/config.c
++++ b/sway/config.c
+@@ -16,6 +16,7 @@
+ #include <strings.h>
+ #include <linux/input-event-codes.h>
+ #include <wlr/types/wlr_output.h>
++#include <wlr/types/wlr_xdg_toplevel_icon_v1.h>
+ #include "sway/input/input-manager.h"
+ #include "sway/input/seat.h"
+ #include "sway/input/switch.h"
+@@ -174,6 +175,7 @@ void free_config(struct sway_config *config) {
+ 	free(config->floating_scroll_left_cmd);
+ 	free(config->floating_scroll_right_cmd);
+ 	free(config->font);
++	free(config->title_window_icon_theme);
+ 	free(config->swaybg_command);
+ 	free(config->swaynag_command);
+ 	free((char *)config->current_config_path);
+@@ -955,6 +957,13 @@ void config_update_font_height(void) {
+ 
+ 	if (config->font_height != prev_max_height) {
+ 		arrange_root();
++
++		// Window icons are shown in title bars, at the height of the font
++		if (server.xdg_toplevel_icon_manager_v1) {
++			int size = config->font_height;
++			wlr_xdg_toplevel_icon_manager_v1_set_sizes(
++				server.xdg_toplevel_icon_manager_v1, &size, 1);
++		}
+ 	}
+ }
+ 
+diff --git a/sway/desktop/xdg_shell.c b/sway/desktop/xdg_shell.c
+index 7217e136..78dfb9b1 100644
+--- a/sway/desktop/xdg_shell.c
++++ b/sway/desktop/xdg_shell.c
+@@ -1,12 +1,19 @@
++#include <cairo.h>
++#include <drm_fourcc.h>
+ #include <float.h>
++#include <inttypes.h>
+ #include <stdbool.h>
+ #include <stdlib.h>
++#include <string.h>
+ #include <wayland-server-core.h>
++#include <wlr/types/wlr_buffer.h>
+ #include <wlr/types/wlr_xdg_shell.h>
++#include <wlr/types/wlr_xdg_toplevel_icon_v1.h>
+ #include <wlr/types/wlr_xdg_toplevel_tag_v1.h>
+ #include <wlr/util/edges.h>
+ #include "log.h"
+ #include "sway/decoration.h"
++#include "sway/icon.h"
+ #include "sway/scene_descriptor.h"
+ #include "sway/desktop/transaction.h"
+ #include "sway/input/cursor.h"
+@@ -270,9 +277,86 @@ static void destroy(struct sway_view *view) {
+ 		return;
+ 	}
+ 	free(xdg_shell_view->tag);
++	wlr_xdg_toplevel_icon_v1_unref(xdg_shell_view->pending_icon);
+ 	free(xdg_shell_view);
+ }
+ 
++static cairo_surface_t *image_from_icon_buffer(struct wlr_buffer *buffer) {
++	void *data;
++	uint32_t format;
++	size_t stride;
++	if (!wlr_buffer_begin_data_ptr_access(buffer,
++			WLR_BUFFER_DATA_PTR_ACCESS_READ, &data, &format, &stride)) {
++		return NULL;
++	}
++
++	// Both formats have premultiplied alpha, like cairo
++	cairo_surface_t *image = NULL;
++	if (format == DRM_FORMAT_ARGB8888 || format == DRM_FORMAT_XRGB8888) {
++		cairo_surface_t *source = cairo_image_surface_create_for_data(data,
++			format == DRM_FORMAT_ARGB8888 ? CAIRO_FORMAT_ARGB32 : CAIRO_FORMAT_RGB24,
++			buffer->width, buffer->height, stride);
++		if (cairo_surface_status(source) == CAIRO_STATUS_SUCCESS) {
++			image = sway_icon_copy_image(source);
++		}
++		cairo_surface_destroy(source);
++	} else {
++		sway_log(SWAY_DEBUG, "Unsupported toplevel icon format 0x%08"PRIX32,
++			format);
++	}
++
++	wlr_buffer_end_data_ptr_access(buffer);
++	return image;
++}
++
++static void fetch_client_icon(struct sway_view *view) {
++	struct sway_xdg_shell_view *xdg_shell_view = xdg_shell_view_from_view(view);
++	if (!xdg_shell_view || !xdg_shell_view->icon_outdated) {
++		return;
++	}
++	xdg_shell_view->icon_outdated = false;
++
++	struct wlr_xdg_toplevel_icon_v1 *icon = xdg_shell_view->pending_icon;
++	list_t *images = NULL;
++	if (icon) {
++		// Choose which images to keep
++		int sizes[256];
++		bool keep[256];
++		size_t n = 0;
++		struct wlr_xdg_toplevel_icon_v1_buffer *icon_buffer;
++		wl_list_for_each(icon_buffer, &icon->buffers, link) {
++			if (n == sizeof(sizes) / sizeof(sizes[0])) {
++				break;
++			}
++			sizes[n++] = icon_buffer->buffer->width;
++		}
++		sway_icon_choose_images(sizes, n, keep);
++
++		images = create_list();
++		size_t i = 0;
++		wl_list_for_each(icon_buffer, &icon->buffers, link) {
++			if (i == n) {
++				break;
++			}
++			if (keep[i++]) {
++				cairo_surface_t *image =
++					image_from_icon_buffer(icon_buffer->buffer);
++				if (image) {
++					list_add(images, image);
++				}
++			}
++		}
++		sway_log(SWAY_DEBUG, "Toplevel icon of view %p: '%s', %d of %zu images",
++			view, icon->name ? icon->name : "", images->length, n);
++	}
++
++	view_set_client_icon(view, icon ? icon->name : NULL, images);
++
++	// The client's buffers aren't needed anymore
++	wlr_xdg_toplevel_icon_v1_unref(icon);
++	xdg_shell_view->pending_icon = NULL;
++}
++
+ static const struct sway_view_impl view_impl = {
+ 	.get_constraints = get_constraints,
+ 	.get_string_prop = get_string_prop,
+@@ -286,6 +370,7 @@ static const struct sway_view_impl view_impl = {
+ 	.close = _close,
+ 	.close_popups = close_popups,
+ 	.destroy = destroy,
++	.fetch_client_icon = fetch_client_icon,
+ };
+ 
+ static void handle_commit(struct wl_listener *listener, void *data) {
+@@ -592,6 +677,26 @@ void handle_xdg_shell_toplevel(struct wl_listener *listener, void *data) {
+ 	xdg_toplevel->base->data = xdg_shell_view;
+ }
+ 
++void xdg_toplevel_icon_manager_v1_handle_set_icon(struct wl_listener *listener,
++		void *data) {
++	const struct wlr_xdg_toplevel_icon_manager_v1_set_icon_event *event = data;
++	// The toplevel may be inert
++	struct sway_view *view = event->toplevel ?
++		view_from_wlr_xdg_surface(event->toplevel->base) : NULL;
++	struct sway_xdg_shell_view *xdg_shell_view =
++		view ? xdg_shell_view_from_view(view) : NULL;
++	if (!xdg_shell_view) {
++		return;
++	}
++
++	// Only keep a reference for now: the images are read if the icon is shown
++	wlr_xdg_toplevel_icon_v1_unref(xdg_shell_view->pending_icon);
++	xdg_shell_view->pending_icon =
++		event->icon ? wlr_xdg_toplevel_icon_v1_ref(event->icon) : NULL;
++	xdg_shell_view->icon_outdated = true;
++	view_update_icon(view);
++}
++
+ void xdg_toplevel_tag_manager_v1_handle_set_tag(struct wl_listener *listener, void *data) {
+ 	const struct wlr_xdg_toplevel_tag_manager_v1_set_tag_event *event = data;
+ 	struct sway_view *view = view_from_wlr_xdg_surface(event->toplevel->base);
+diff --git a/sway/desktop/xwayland.c b/sway/desktop/xwayland.c
+index 65016b3b..0913d1d2 100644
+--- a/sway/desktop/xwayland.c
++++ b/sway/desktop/xwayland.c
+@@ -1,4 +1,7 @@
++#include <cairo.h>
+ #include <float.h>
++#include <inttypes.h>
++#include <limits.h>
+ #include <stdbool.h>
+ #include <stdlib.h>
+ #include <wayland-server-core.h>
+@@ -10,6 +13,7 @@
+ #include <xcb/xcb_icccm.h>
+ #include "log.h"
+ #include "sway/desktop/transaction.h"
++#include "sway/icon.h"
+ #include "sway/input/cursor.h"
+ #include "sway/input/input-manager.h"
+ #include "sway/input/seat.h"
+@@ -398,6 +402,84 @@ static void get_constraints(struct sway_view *view, double *min_width,
+ 	*max_height = size_hints->max_height > 0 ? size_hints->max_height : DBL_MAX;
+ }
+ 
++static cairo_surface_t *image_from_net_wm_icon(uint32_t width, uint32_t height,
++		const uint32_t *data) {
++	if (width == 0 || height == 0 || width > 1024 || height > 1024) {
++		return NULL;
++	}
++	cairo_surface_t *image =
++		cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width, height);
++	if (cairo_surface_status(image) != CAIRO_STATUS_SUCCESS) {
++		cairo_surface_destroy(image);
++		return NULL;
++	}
++
++	// _NET_WM_ICON pixels are ARGB, without premultiplied alpha
++	cairo_surface_flush(image);
++	unsigned char *dst = cairo_image_surface_get_data(image);
++	int stride = cairo_image_surface_get_stride(image);
++	for (uint32_t y = 0; y < height; ++y) {
++		uint32_t *row = (uint32_t *)(dst + y * stride);
++		for (uint32_t x = 0; x < width; ++x) {
++			uint32_t pixel = data[y * width + x];
++			uint32_t a = pixel >> 24;
++			uint32_t r = (((pixel >> 16) & 0xff) * a + 127) / 255;
++			uint32_t g = (((pixel >> 8) & 0xff) * a + 127) / 255;
++			uint32_t b = ((pixel & 0xff) * a + 127) / 255;
++			row[x] = a << 24 | r << 16 | g << 8 | b;
++		}
++	}
++	cairo_surface_mark_dirty(image);
++	return image;
++}
++
++static void fetch_client_icon(struct sway_view *view) {
++	struct sway_xwayland_view *xwayland_view = xwayland_view_from_view(view);
++	struct wlr_xwayland_surface *xsurface = view->wlr_xwayland_surface;
++	if (!xwayland_view || !xwayland_view->icon_outdated || !xsurface) {
++		return;
++	}
++	xwayland_view->icon_outdated = false;
++
++	list_t *images = create_list();
++	xcb_ewmh_get_wm_icon_reply_t reply;
++	if (wlr_xwayland_surface_fetch_icon(xsurface, &reply)) {
++		// Choose which images to keep
++		int sizes[256];
++		bool keep[256];
++		size_t n = 0;
++		xcb_ewmh_wm_icon_iterator_t iter = xcb_ewmh_get_wm_icon_iterator(&reply);
++		for (; iter.rem > 0 && n < sizeof(sizes) / sizeof(sizes[0]);
++				xcb_ewmh_get_wm_icon_next(&iter)) {
++			uint32_t size = iter.width > iter.height ? iter.width : iter.height;
++			sizes[n++] = size > INT_MAX ? 0 : (int)size;
++		}
++		sway_icon_choose_images(sizes, n, keep);
++
++		iter = xcb_ewmh_get_wm_icon_iterator(&reply);
++		for (size_t i = 0; iter.rem > 0 && i < n;
++				++i, xcb_ewmh_get_wm_icon_next(&iter)) {
++			if (!keep[i]) {
++				continue;
++			}
++			cairo_surface_t *image =
++				image_from_net_wm_icon(iter.width, iter.height, iter.data);
++			if (image) {
++				cairo_surface_t *copy = sway_icon_copy_image(image);
++				cairo_surface_destroy(image);
++				if (copy) {
++					list_add(images, copy);
++				}
++			}
++		}
++		xcb_ewmh_get_wm_icon_reply_wipe(&reply);
++	}
++
++	sway_log(SWAY_DEBUG, "Fetched %d icons for X11 window 0x%"PRIx32,
++		images->length, xsurface->window_id);
++	view_set_client_icon(view, NULL, images);
++}
++
+ static const struct sway_view_impl view_impl = {
+ 	.get_constraints = get_constraints,
+ 	.get_string_prop = get_string_prop,
+@@ -410,6 +492,7 @@ static const struct sway_view_impl view_impl = {
+ 	.is_transient_for = is_transient_for,
+ 	.close = _close,
+ 	.destroy = destroy,
++	.fetch_client_icon = fetch_client_icon,
+ };
+ 
+ static void handle_commit(struct wl_listener *listener, void *data) {
+@@ -479,6 +562,7 @@ static void handle_destroy(struct wl_listener *listener, void *data) {
+ 	wl_list_remove(&xwayland_view->set_window_type.link);
+ 	wl_list_remove(&xwayland_view->set_hints.link);
+ 	wl_list_remove(&xwayland_view->set_decorations.link);
++	wl_list_remove(&xwayland_view->set_icon.link);
+ 	wl_list_remove(&xwayland_view->associate.link);
+ 	wl_list_remove(&xwayland_view->dissociate.link);
+ 	wl_list_remove(&xwayland_view->override_redirect.link);
+@@ -700,10 +784,19 @@ static void handle_set_class(struct wl_listener *listener, void *data) {
+ 	if (xsurface->surface == NULL || !xsurface->surface->mapped) {
+ 		return;
+ 	}
++	view_update_icon(view);
+ 	view_execute_criteria(view);
+ 	transaction_commit_dirty();
+ }
+ 
++static void handle_set_icon(struct wl_listener *listener, void *data) {
++	struct sway_xwayland_view *xwayland_view =
++		wl_container_of(listener, xwayland_view, set_icon);
++	// Fetching the icon requires a roundtrip, so only do it when it's needed
++	xwayland_view->icon_outdated = true;
++	view_update_icon(&xwayland_view->view);
++}
++
+ static void handle_set_role(struct wl_listener *listener, void *data) {
+ 	struct sway_xwayland_view *xwayland_view =
+ 		wl_container_of(listener, xwayland_view, set_role);
+@@ -863,6 +956,10 @@ struct sway_xwayland_view *create_xwayland_view(struct wlr_xwayland_surface *xsu
+ 			&xwayland_view->set_decorations);
+ 	xwayland_view->set_decorations.notify = handle_set_decorations;
+ 
++	wl_signal_add(&xsurface->events.set_icon, &xwayland_view->set_icon);
++	xwayland_view->set_icon.notify = handle_set_icon;
++	xwayland_view->icon_outdated = true;
++
+ 	wl_signal_add(&xsurface->events.associate, &xwayland_view->associate);
+ 	xwayland_view->associate.notify = handle_associate;
+ 
+diff --git a/sway/desktop_entry.c b/sway/desktop_entry.c
+new file mode 100644
+index 00000000..98113756
+--- /dev/null
++++ b/sway/desktop_entry.c
+@@ -0,0 +1,394 @@
++#include <ctype.h>
++#include <dirent.h>
++#include <errno.h>
++#include <fcntl.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <strings.h>
++#include <sys/stat.h>
++#include <unistd.h>
++#include "list.h"
++#include "log.h"
++#include "stringop.h"
++#include "sway/desktop_entry.h"
++
++struct desktop_entry {
++	char *id; // desktop file ID, without the .desktop suffix
++	char *icon; // may be NULL
++	char *wm_class; // StartupWMClass, may be NULL
++};
++
++// All desktop entries, in order of precedence. NULL until first needed.
++static list_t *desktop_entries = NULL;
++
++static char *strip(char *str) {
++	while (isspace((unsigned char)*str)) {
++		++str;
++	}
++	char *end = str + strlen(str);
++	while (end > str && isspace((unsigned char)end[-1])) {
++		--end;
++	}
++	*end = '\0';
++	return str;
++}
++
++int open_regular_file(const char *path, size_t max_size, struct stat *st) {
++	int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
++	if (fd < 0) {
++		return -1;
++	}
++	struct stat tmp;
++	if (!st) {
++		st = &tmp;
++	}
++	if (fstat(fd, st) != 0 || !S_ISREG(st->st_mode) || st->st_size < 0 ||
++			(uintmax_t)st->st_size > max_size) {
++		close(fd);
++		return -1;
++	}
++	return fd;
++}
++
++char *read_regular_file(const char *path, size_t max_size, size_t *len,
++		struct stat *st) {
++	struct stat tmp;
++	if (!st) {
++		st = &tmp;
++	}
++	int fd = open_regular_file(path, max_size, st);
++	if (fd < 0) {
++		return NULL;
++	}
++	size_t size = st->st_size;
++	char *data = malloc(size + 1);
++	size_t done = 0;
++	while (data && done < size) {
++		ssize_t n = read(fd, data + done, size - done);
++		if (n < 0 && errno == EINTR) {
++			continue;
++		}
++		if (n <= 0) {
++			free(data);
++			data = NULL;
++			break;
++		}
++		done += n;
++	}
++	close(fd);
++	if (data) {
++		data[size] = '\0';
++		*len = size;
++	}
++	return data;
++}
++
++bool desktop_file_parse(const char *path, desktop_file_handler_t handler,
++		void *data) {
++	int fd = open_regular_file(path, 4 * 1024 * 1024, NULL);
++	FILE *file = fd >= 0 ? fdopen(fd, "r") : NULL;
++	if (!file) {
++		if (fd >= 0) {
++			close(fd);
++		}
++		return false;
++	}
++
++	char *group = NULL;
++	char *line = NULL;
++	size_t line_size = 0;
++	while (getline(&line, &line_size, file) != -1) {
++		char *str = strip(line);
++		if (str[0] == '\0' || str[0] == '#') {
++			continue;
++		}
++
++		if (str[0] == '[') {
++			char *end = strchr(str, ']');
++			if (!end) {
++				break; // malformed group header
++			}
++			*end = '\0';
++			free(group);
++			group = strdup(str + 1);
++			continue;
++		}
++
++		char *eq = strchr(str, '=');
++		if (!group || !eq) {
++			continue;
++		}
++		*eq = '\0';
++		if (!handler(data, group, strip(str), strip(eq + 1))) {
++			break;
++		}
++	}
++
++	free(line);
++	free(group);
++	fclose(file);
++	return true;
++}
++
++static int cmp_str(const void *item, const void *cmp_to) {
++	return strcmp(item, cmp_to);
++}
++
++list_t *xdg_data_dirs(void) {
++	list_t *dirs = create_list();
++
++	const char *data_home = getenv("XDG_DATA_HOME");
++	const char *home = getenv("HOME");
++	if (data_home && data_home[0] == '/') {
++		list_add(dirs, strdup(data_home));
++	} else if (home && *home) {
++		list_add(dirs, format_str("%s/.local/share", home));
++	}
++
++	const char *data_dirs = getenv("XDG_DATA_DIRS");
++	if (!data_dirs || !*data_dirs) {
++		data_dirs = "/usr/local/share:/usr/share";
++	}
++	list_t *split = split_string(data_dirs, ":");
++	for (int i = 0; i < split->length; ++i) {
++		char *dir = split->items[i];
++		if (dir[0] == '/' && list_seq_find(dirs, cmp_str, dir) == -1) {
++			list_add(dirs, dir);
++		} else {
++			free(dir);
++		}
++	}
++	list_free(split);
++
++	return dirs;
++}
++
++struct entry_parse_state {
++	char *icon;
++	char *wm_class;
++};
++
++static bool handle_desktop_entry_key(void *data, const char *group,
++		const char *key, const char *value) {
++	struct entry_parse_state *state = data;
++	if (strcmp(group, "Desktop Entry") != 0) {
++		// The main group comes first, there's nothing more for us to read
++		return false;
++	}
++	if (strcmp(key, "Icon") == 0 && !state->icon && *value) {
++		state->icon = strdup(value);
++	} else if (strcmp(key, "StartupWMClass") == 0 && !state->wm_class && *value) {
++		state->wm_class = strdup(value);
++	}
++	return true;
++}
++
++static struct desktop_entry *desktop_entry_load(const char *path,
++		const char *id) {
++	struct entry_parse_state state = {0};
++	if (!desktop_file_parse(path, handle_desktop_entry_key, &state)) {
++		return NULL;
++	}
++	struct desktop_entry *entry = calloc(1, sizeof(*entry));
++	if (!entry) {
++		free(state.icon);
++		free(state.wm_class);
++		return NULL;
++	}
++	entry->id = strdup(id);
++	entry->icon = state.icon;
++	entry->wm_class = state.wm_class;
++	return entry;
++}
++
++static void desktop_entry_destroy(struct desktop_entry *entry) {
++	free(entry->id);
++	free(entry->icon);
++	free(entry->wm_class);
++	free(entry);
++}
++
++static struct desktop_entry *find_entry(const char *id) {
++	for (int i = 0; i < desktop_entries->length; ++i) {
++		struct desktop_entry *entry = desktop_entries->items[i];
++		if (strcmp(entry->id, id) == 0) {
++			return entry;
++		}
++	}
++	return NULL;
++}
++
++static bool is_dir(const char *path) {
++	struct stat st;
++	return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
++}
++
++static void scan_applications_dir(const char *path, const char *prefix,
++		int depth) {
++	DIR *dir = opendir(path);
++	if (!dir) {
++		return;
++	}
++
++	static const char suffix[] = ".desktop";
++	const size_t suffix_len = strlen(suffix);
++
++	struct dirent *dirent;
++	while ((dirent = readdir(dir))) {
++		const char *name = dirent->d_name;
++		if (name[0] == '.') {
++			continue;
++		}
++		char *child = format_str("%s/%s", path, name);
++		if (!child) {
++			continue;
++		}
++
++		size_t len = strlen(name);
++		bool is_desktop_file = len > suffix_len &&
++			strcmp(name + len - suffix_len, suffix) == 0;
++		if (!is_desktop_file && is_dir(child)) {
++			// Desktop file IDs of entries in subdirectories are prefixed with
++			// the subdirectory name and a dash
++			if (depth < 3) {
++				char *child_prefix = format_str("%s%s-", prefix, name);
++				if (child_prefix) {
++					scan_applications_dir(child, child_prefix, depth + 1);
++					free(child_prefix);
++				}
++			}
++		} else if (is_desktop_file) {
++			char *id = format_str("%s%.*s", prefix,
++				(int)(len - suffix_len), name);
++			// Entries found earlier take precedence
++			if (id && !find_entry(id)) {
++				struct desktop_entry *entry = desktop_entry_load(child, id);
++				if (entry) {
++					list_add(desktop_entries, entry);
++				}
++			}
++			free(id);
++		}
++		free(child);
++	}
++	closedir(dir);
++}
++
++static void load_desktop_entries(void) {
++	if (desktop_entries) {
++		return;
++	}
++	desktop_entries = create_list();
++
++	list_t *data_dirs = xdg_data_dirs();
++	for (int i = 0; i < data_dirs->length; ++i) {
++		char *path = format_str("%s/applications", (char *)data_dirs->items[i]);
++		if (path) {
++			scan_applications_dir(path, "", 0);
++			free(path);
++		}
++	}
++	list_free_items_and_destroy(data_dirs);
++
++	sway_log(SWAY_DEBUG, "Loaded %d desktop entries", desktop_entries->length);
++}
++
++/**
++ * Reads the desktop entry with the given ID directly, in case it has been
++ * installed after the desktop entries were loaded.
++ */
++static struct desktop_entry *load_new_desktop_entry(const char *id) {
++	if (strchr(id, '/')) {
++		return NULL;
++	}
++
++	struct desktop_entry *entry = NULL;
++	list_t *data_dirs = xdg_data_dirs();
++	for (int i = 0; i < data_dirs->length && !entry; ++i) {
++		char *path = format_str("%s/applications/%s.desktop",
++			(char *)data_dirs->items[i], id);
++		if (path) {
++			entry = desktop_entry_load(path, id);
++			free(path);
++		}
++	}
++	list_free_items_and_destroy(data_dirs);
++
++	if (entry) {
++		list_add(desktop_entries, entry);
++	}
++	return entry;
++}
++
++static bool match_id_case_insensitive(struct desktop_entry *entry,
++		const char *app_id) {
++	return strcasecmp(entry->id, app_id) == 0;
++}
++
++static bool match_wm_class(struct desktop_entry *entry, const char *app_id) {
++	return entry->wm_class && strcmp(entry->wm_class, app_id) == 0;
++}
++
++static bool match_wm_class_case_insensitive(struct desktop_entry *entry,
++		const char *app_id) {
++	return entry->wm_class && strcasecmp(entry->wm_class, app_id) == 0;
++}
++
++// Matches reverse-DNS desktop file IDs to their last component, for instance
++// "com.example.Foo" to the app_id "foo"
++static bool match_id_last_component(struct desktop_entry *entry,
++		const char *app_id) {
++	const char *last = strrchr(entry->id, '.');
++	return last && strcasecmp(last + 1, app_id) == 0;
++}
++
++char *desktop_entry_find_icon(const char *app_id) {
++	if (!app_id || !*app_id) {
++		return NULL;
++	}
++
++	load_desktop_entries();
++
++	struct desktop_entry *entry = find_entry(app_id);
++	if (!entry) {
++		entry = load_new_desktop_entry(app_id);
++	}
++
++	bool (*matchers[])(struct desktop_entry *entry, const char *app_id) = {
++		match_id_case_insensitive,
++		match_wm_class,
++		match_wm_class_case_insensitive,
++		match_id_last_component,
++	};
++	size_t n_matchers = sizeof(matchers) / sizeof(matchers[0]);
++	for (size_t i = 0; i < n_matchers && !(entry && entry->icon); ++i) {
++		for (int j = 0; j < desktop_entries->length; ++j) {
++			struct desktop_entry *candidate = desktop_entries->items[j];
++			if (candidate->icon && matchers[i](candidate, app_id)) {
++				entry = candidate;
++				break;
++			}
++		}
++	}
++
++	if (!entry || !entry->icon) {
++		sway_log(SWAY_DEBUG, "No desktop entry with an icon for '%s'", app_id);
++		return NULL;
++	}
++	sway_log(SWAY_DEBUG, "Desktop entry '%s' for '%s' has icon '%s'",
++		entry->id, app_id, entry->icon);
++	return strdup(entry->icon);
++}
++
++void desktop_entries_reset(void) {
++	if (!desktop_entries) {
++		return;
++	}
++	for (int i = 0; i < desktop_entries->length; ++i) {
++		desktop_entry_destroy(desktop_entries->items[i]);
++	}
++	list_free(desktop_entries);
++	desktop_entries = NULL;
++}
+diff --git a/sway/icon.c b/sway/icon.c
+new file mode 100644
+index 00000000..15c1d949
+--- /dev/null
++++ b/sway/icon.c
+@@ -0,0 +1,589 @@
++#include <cairo.h>
++#include <ctype.h>
++#include <drm_fourcc.h>
++#include <inttypes.h>
++#include <math.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <strings.h>
++#include <wlr/interfaces/wlr_buffer.h>
++#include <wlr/types/wlr_buffer.h>
++#include "config.h"
++#if HAVE_LIBRSVG
++#include <librsvg/rsvg.h>
++#endif
++#include "list.h"
++#include "log.h"
++#include "sway/config.h"
++#include "sway/desktop_entry.h"
++#include "sway/icon.h"
++#include "sway/icon_theme.h"
++
++// Images larger than this aren't loaded
++#define MAX_IMAGE_SIZE 2048
++// Image files larger than this aren't read
++#define MAX_IMAGE_FILE_SIZE (16 * 1024 * 1024)
++// The number of sizes an icon keeps rendered buffers for
++#define MAX_ICON_BUFFERS 4
++// Images provided by a client that we keep: how many, how large (larger ones
++// are scaled down), and the size of images that we ignore
++#define MAX_CLIENT_IMAGES 8
++#define MAX_CLIENT_IMAGE_SIZE 128
++#define MAX_CLIENT_SOURCE_SIZE 1024
++// Lookup results are forgotten once there are more of them than this
++#define MAX_CACHE_ENTRIES 256
++
++enum sway_icon_type {
++	ICON_NAMED, // from the icon theme
++	ICON_FILE, // from an image file
++	ICON_IMAGES, // from pixel data
++};
++
++struct icon_buffer {
++	struct wlr_buffer base;
++	cairo_surface_t *surface;
++};
++
++struct sway_icon {
++	int refs;
++	enum sway_icon_type type;
++	char *name; // the icon name for ICON_NAMED, the path for ICON_FILE
++	list_t *images; // cairo_surface_t *, for ICON_IMAGES
++
++	// Buffers rendered at different sizes, most recently used first
++	struct icon_buffer *buffers[MAX_ICON_BUFFERS];
++};
++
++struct cache_entry {
++	char *key;
++	struct sway_icon *icon; // NULL if there's no icon
++};
++
++static list_t *named_icons = NULL; // struct cache_entry *
++static list_t *app_icons = NULL; // struct cache_entry *
++
++static void icon_buffer_handle_destroy(struct wlr_buffer *wlr_buffer) {
++	struct icon_buffer *buffer = wl_container_of(wlr_buffer, buffer, base);
++	cairo_surface_destroy(buffer->surface);
++	free(buffer);
++}
++
++static bool icon_buffer_handle_begin_data_ptr_access(struct wlr_buffer *wlr_buffer,
++		uint32_t flags, void **data, uint32_t *format, size_t *stride) {
++	struct icon_buffer *buffer = wl_container_of(wlr_buffer, buffer, base);
++	if (flags & WLR_BUFFER_DATA_PTR_ACCESS_WRITE) {
++		return false;
++	}
++	*data = cairo_image_surface_get_data(buffer->surface);
++	*stride = cairo_image_surface_get_stride(buffer->surface);
++	*format = DRM_FORMAT_ARGB8888;
++	return true;
++}
++
++static void icon_buffer_handle_end_data_ptr_access(struct wlr_buffer *wlr_buffer) {
++	// This space is intentionally left blank
++}
++
++static const struct wlr_buffer_impl icon_buffer_impl = {
++	.destroy = icon_buffer_handle_destroy,
++	.begin_data_ptr_access = icon_buffer_handle_begin_data_ptr_access,
++	.end_data_ptr_access = icon_buffer_handle_end_data_ptr_access,
++};
++
++static cairo_surface_t *create_image_surface(int width, int height) {
++	cairo_surface_t *surface =
++		cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width, height);
++	if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS) {
++		sway_log(SWAY_ERROR, "Failed to create a cairo surface: %s",
++			cairo_status_to_string(cairo_surface_status(surface)));
++		cairo_surface_destroy(surface);
++		return NULL;
++	}
++	return surface;
++}
++
++/**
++ * Paints an image on a size×size surface, scaled to fit and centered.
++ */
++static cairo_surface_t *render_image(cairo_surface_t *image, int size) {
++	int width = cairo_image_surface_get_width(image);
++	int height = cairo_image_surface_get_height(image);
++	if (width <= 0 || height <= 0) {
++		return NULL;
++	}
++	cairo_surface_t *surface = create_image_surface(size, size);
++	if (!surface) {
++		return NULL;
++	}
++
++	double scale = fmin((double)size / width, (double)size / height);
++	if (scale > 1 && scale <= 4.0 / 3) {
++		// Upscaling an image only slightly makes it blurry for little gain:
++		// show it at its original size instead
++		scale = 1;
++	}
++
++	cairo_t *cairo = cairo_create(surface);
++	cairo_translate(cairo, floor((size - width * scale) / 2),
++		floor((size - height * scale) / 2));
++	cairo_scale(cairo, scale, scale);
++	cairo_set_source_surface(cairo, image, 0, 0);
++	cairo_pattern_set_filter(cairo_get_source(cairo), CAIRO_FILTER_GOOD);
++	cairo_paint(cairo);
++	cairo_destroy(cairo);
++	cairo_surface_flush(surface);
++	return surface;
++}
++
++static bool check_png_size(const char *path, const unsigned char *data,
++		size_t len) {
++	if (len < 24 || memcmp(data, "\x89PNG\r\n\x1a\n", 8) != 0 ||
++			memcmp(data + 12, "IHDR", 4) != 0) {
++		sway_log(SWAY_ERROR, "Failed to load icon %s: not a PNG file", path);
++		return false;
++	}
++
++	uint32_t width = (uint32_t)data[16] << 24 | (uint32_t)data[17] << 16 |
++		(uint32_t)data[18] << 8 | data[19];
++	uint32_t height = (uint32_t)data[20] << 24 | (uint32_t)data[21] << 16 |
++		(uint32_t)data[22] << 8 | data[23];
++	if (width > MAX_IMAGE_SIZE || height > MAX_IMAGE_SIZE) {
++		sway_log(SWAY_ERROR, "Not loading icon %s: image too large (%"PRIu32
++			"x%"PRIu32")", path, width, height);
++		return false;
++	}
++	return true;
++}
++
++struct png_reader {
++	const unsigned char *data;
++	size_t len, pos;
++};
++
++static cairo_status_t read_png_data(void *closure, unsigned char *data,
++		unsigned int length) {
++	struct png_reader *reader = closure;
++	if (length > reader->len - reader->pos) {
++		return CAIRO_STATUS_READ_ERROR;
++	}
++	memcpy(data, reader->data + reader->pos, length);
++	reader->pos += length;
++	return CAIRO_STATUS_SUCCESS;
++}
++
++static cairo_surface_t *render_png(const char *path, int size) {
++	// Read the file ourselves, as a regular file: a FIFO would block
++	size_t len = 0;
++	unsigned char *data = (unsigned char *)read_regular_file(path,
++		MAX_IMAGE_FILE_SIZE, &len, NULL);
++	if (!data) {
++		sway_log(SWAY_ERROR, "Failed to load icon %s: unable to read the file "
++			"or file too large", path);
++		return NULL;
++	}
++	if (!check_png_size(path, data, len)) {
++		free(data);
++		return NULL;
++	}
++
++	struct png_reader reader = { .data = data, .len = len };
++	cairo_surface_t *image =
++		cairo_image_surface_create_from_png_stream(read_png_data, &reader);
++	free(data);
++	if (cairo_surface_status(image) != CAIRO_STATUS_SUCCESS) {
++		sway_log(SWAY_ERROR, "Failed to load icon %s: %s", path,
++			cairo_status_to_string(cairo_surface_status(image)));
++		cairo_surface_destroy(image);
++		return NULL;
++	}
++	cairo_surface_t *surface = render_image(image, size);
++	cairo_surface_destroy(image);
++	return surface;
++}
++
++#if HAVE_LIBRSVG
++static cairo_surface_t *render_svg(const char *path, int size) {
++	// Don't let librsvg open the file: going through GIO would load GVfs
++	// modules into the compositor. This also prevents loading external files.
++	size_t len = 0;
++	char *data = read_regular_file(path, MAX_IMAGE_FILE_SIZE, &len, NULL);
++	if (!data) {
++		sway_log(SWAY_ERROR, "Failed to load icon %s: unable to read the file "
++			"or file too large", path);
++		return NULL;
++	}
++
++	GError *error = NULL;
++	RsvgHandle *handle =
++		rsvg_handle_new_from_data((const guint8 *)data, len, &error);
++	free(data);
++	if (!handle) {
++		sway_log(SWAY_ERROR, "Failed to load icon %s: %s", path,
++			error ? error->message : "unknown error");
++		g_clear_error(&error);
++		return NULL;
++	}
++
++	cairo_surface_t *surface = create_image_surface(size, size);
++	if (surface) {
++		cairo_t *cairo = cairo_create(surface);
++		RsvgRectangle viewport = { .x = 0, .y = 0, .width = size, .height = size };
++		if (!rsvg_handle_render_document(handle, cairo, &viewport, &error)) {
++			sway_log(SWAY_ERROR, "Failed to render icon %s: %s", path,
++				error ? error->message : "unknown error");
++			g_clear_error(&error);
++			cairo_surface_destroy(surface);
++			surface = NULL;
++		}
++		cairo_destroy(cairo);
++	}
++	g_object_unref(handle);
++
++	if (surface) {
++		cairo_surface_flush(surface);
++	}
++	return surface;
++}
++#endif
++
++static cairo_surface_t *render_file(const char *path,
++		enum icon_file_format format, int size) {
++	switch (format) {
++	case ICON_FORMAT_PNG:
++		return render_png(path, size);
++	case ICON_FORMAT_SVG:
++#if HAVE_LIBRSVG
++		return render_svg(path, size);
++#else
++		return NULL;
++#endif
++	}
++	return NULL;
++}
++
++static bool has_suffix(const char *str, const char *suffix) {
++	size_t len = strlen(str), suffix_len = strlen(suffix);
++	return len >= suffix_len &&
++		strcasecmp(str + len - suffix_len, suffix) == 0;
++}
++
++static cairo_surface_t *render_images(list_t *images, int size) {
++	// Use the smallest image at least as large as requested, or else the
++	// largest image
++	cairo_surface_t *best = NULL;
++	int best_size = 0;
++	for (int i = 0; i < images->length; ++i) {
++		cairo_surface_t *image = images->items[i];
++		int image_size = MAX(cairo_image_surface_get_width(image),
++			cairo_image_surface_get_height(image));
++		if (!best || (best_size < size ? image_size > best_size :
++				image_size >= size && image_size < best_size)) {
++			best = image;
++			best_size = image_size;
++		}
++	}
++	return best ? render_image(best, size) : NULL;
++}
++
++static cairo_surface_t *icon_render(struct sway_icon *icon, int size) {
++	switch (icon->type) {
++	case ICON_NAMED:;
++		struct icon_file file;
++		if (!icon_theme_find(config->title_window_icon_theme, icon->name, size,
++				&file)) {
++			return NULL;
++		}
++		cairo_surface_t *surface = render_file(file.path, file.format, size);
++		icon_file_finish(&file);
++		return surface;
++	case ICON_FILE:
++		return render_file(icon->name, has_suffix(icon->name, ".svg") ?
++			ICON_FORMAT_SVG : ICON_FORMAT_PNG, size);
++	case ICON_IMAGES:
++		return render_images(icon->images, size);
++	}
++	return NULL;
++}
++
++struct wlr_buffer *sway_icon_get_buffer(struct sway_icon *icon, int size) {
++	if (size <= 0 || size > MAX_IMAGE_SIZE) {
++		return NULL;
++	}
++
++	for (int i = 0; i < MAX_ICON_BUFFERS; ++i) {
++		struct icon_buffer *buffer = icon->buffers[i];
++		if (buffer && buffer->base.width == size) {
++			memmove(&icon->buffers[1], &icon->buffers[0],
++				i * sizeof(icon->buffers[0]));
++			icon->buffers[0] = buffer;
++			return &buffer->base;
++		}
++	}
++
++	cairo_surface_t *surface = icon_render(icon, size);
++	if (!surface) {
++		return NULL;
++	}
++	struct icon_buffer *buffer = calloc(1, sizeof(*buffer));
++	if (!buffer) {
++		cairo_surface_destroy(surface);
++		return NULL;
++	}
++	wlr_buffer_init(&buffer->base, &icon_buffer_impl, size, size);
++	buffer->surface = surface;
++
++	struct icon_buffer *oldest = icon->buffers[MAX_ICON_BUFFERS - 1];
++	if (oldest) {
++		wlr_buffer_drop(&oldest->base);
++	}
++	memmove(&icon->buffers[1], &icon->buffers[0],
++		(MAX_ICON_BUFFERS - 1) * sizeof(icon->buffers[0]));
++	icon->buffers[0] = buffer;
++	return &buffer->base;
++}
++
++static struct sway_icon *icon_create(enum sway_icon_type type,
++		const char *name, list_t *images) {
++	struct sway_icon *icon = calloc(1, sizeof(*icon));
++	if (!icon) {
++		return NULL;
++	}
++	icon->refs = 1;
++	icon->type = type;
++	icon->name = name ? strdup(name) : NULL;
++	icon->images = images;
++	return icon;
++}
++
++struct sway_icon *sway_icon_ref(struct sway_icon *icon) {
++	++icon->refs;
++	return icon;
++}
++
++void sway_icon_unref(struct sway_icon *icon) {
++	if (!icon || --icon->refs > 0) {
++		return;
++	}
++	for (int i = 0; i < MAX_ICON_BUFFERS; ++i) {
++		if (icon->buffers[i]) {
++			wlr_buffer_drop(&icon->buffers[i]->base);
++		}
++	}
++	if (icon->images) {
++		for (int i = 0; i < icon->images->length; ++i) {
++			cairo_surface_destroy(icon->images->items[i]);
++		}
++		list_free(icon->images);
++	}
++	free(icon->name);
++	free(icon);
++}
++
++void sway_icon_choose_images(const int *sizes, size_t n, bool *keep) {
++	// Keep the largest images (once scaled down to MAX_CLIENT_IMAGE_SIZE), as
++	// scaling down gives better results than scaling up, and only one image of
++	// each size, preferring the smallest source image
++	int kept_sizes[MAX_CLIENT_IMAGES];
++	int n_kept = 0;
++	for (size_t i = 0; i < n; ++i) {
++		keep[i] = false;
++	}
++	while (n_kept < MAX_CLIENT_IMAGES) {
++		size_t best = n;
++		int best_size = 0;
++		for (size_t i = 0; i < n; ++i) {
++			if (keep[i] || sizes[i] <= 0 || sizes[i] > MAX_CLIENT_SOURCE_SIZE) {
++				continue;
++			}
++			int size = MIN(sizes[i], MAX_CLIENT_IMAGE_SIZE);
++			bool taken = false;
++			for (int j = 0; j < n_kept; ++j) {
++				taken |= kept_sizes[j] == size;
++			}
++			if (!taken && (best == n || size > best_size ||
++					(size == best_size && sizes[i] < sizes[best]))) {
++				best = i;
++				best_size = size;
++			}
++		}
++		if (best == n) {
++			break;
++		}
++		keep[best] = true;
++		kept_sizes[n_kept++] = best_size;
++	}
++}
++
++cairo_surface_t *sway_icon_copy_image(cairo_surface_t *image) {
++	int width = cairo_image_surface_get_width(image);
++	int height = cairo_image_surface_get_height(image);
++	if (width <= 0 || height <= 0) {
++		return NULL;
++	}
++	if (MAX(width, height) > MAX_CLIENT_IMAGE_SIZE) {
++		return render_image(image, MAX_CLIENT_IMAGE_SIZE);
++	}
++
++	cairo_surface_t *copy = create_image_surface(width, height);
++	if (!copy) {
++		return NULL;
++	}
++	cairo_t *cairo = cairo_create(copy);
++	cairo_set_operator(cairo, CAIRO_OPERATOR_SOURCE);
++	cairo_set_source_surface(cairo, image, 0, 0);
++	cairo_paint(cairo);
++	cairo_destroy(cairo);
++	cairo_surface_flush(copy);
++	return copy;
++}
++
++struct sway_icon *sway_icon_from_images(list_t *images) {
++	struct sway_icon *icon = icon_create(ICON_IMAGES, NULL, images);
++	if (!icon) {
++		for (int i = 0; i < images->length; ++i) {
++			cairo_surface_destroy(images->items[i]);
++		}
++		list_free(images);
++	}
++	return icon;
++}
++
++static struct cache_entry *cache_find(list_t *cache, const char *key) {
++	if (!cache) {
++		return NULL;
++	}
++	for (int i = 0; i < cache->length; ++i) {
++		struct cache_entry *entry = cache->items[i];
++		if (strcmp(entry->key, key) == 0) {
++			return entry;
++		}
++	}
++	return NULL;
++}
++
++static void cache_clear(list_t *cache) {
++	if (!cache) {
++		return;
++	}
++	for (int i = 0; i < cache->length; ++i) {
++		struct cache_entry *entry = cache->items[i];
++		sway_icon_unref(entry->icon);
++		free(entry->key);
++		free(entry);
++	}
++	cache->length = 0;
++}
++
++static void cache_add(list_t **cache, const char *key, struct sway_icon *icon) {
++	if (!*cache) {
++		*cache = create_list();
++	}
++	if ((*cache)->length >= MAX_CACHE_ENTRIES) {
++		cache_clear(*cache);
++	}
++	struct cache_entry *entry = calloc(1, sizeof(*entry));
++	if (!entry) {
++		return;
++	}
++	entry->key = strdup(key);
++	entry->icon = icon ? sway_icon_ref(icon) : NULL;
++	list_add(*cache, entry);
++}
++
++/**
++ * Checks that the icon can be rendered, so that we can fall back to another
++ * one otherwise.
++ */
++static struct sway_icon *icon_check(struct sway_icon *icon) {
++	int size = config->font_height > 0 ? config->font_height : 16;
++	if (icon && !sway_icon_get_buffer(icon, size)) {
++		sway_icon_unref(icon);
++		return NULL;
++	}
++	return icon;
++}
++
++static struct sway_icon *icon_from_path(const char *path) {
++	struct cache_entry *entry = cache_find(named_icons, path);
++	if (entry) {
++		return entry->icon ? sway_icon_ref(entry->icon) : NULL;
++	}
++	struct sway_icon *icon = icon_check(icon_create(ICON_FILE, path, NULL));
++	cache_add(&named_icons, path, icon);
++	return icon;
++}
++
++struct sway_icon *sway_icon_from_name(const char *name) {
++	if (!name || !*name || strchr(name, '/')) {
++		return NULL;
++	}
++	struct cache_entry *entry = cache_find(named_icons, name);
++	if (entry) {
++		return entry->icon ? sway_icon_ref(entry->icon) : NULL;
++	}
++
++	struct sway_icon *icon = icon_check(icon_create(ICON_NAMED, name, NULL));
++	if (!icon && (has_suffix(name, ".png") || has_suffix(name, ".svg") ||
++			has_suffix(name, ".xpm"))) {
++		// Some desktop entries wrongly include the file extension
++		char *stem = strndup(name, strlen(name) - 4);
++		if (stem) {
++			icon = sway_icon_from_name(stem);
++			free(stem);
++		}
++	}
++	cache_add(&named_icons, name, icon);
++	return icon;
++}
++
++struct sway_icon *sway_icon_for_app(const char *app_id) {
++	if (!app_id || !*app_id) {
++		return NULL;
++	}
++	struct cache_entry *entry = cache_find(app_icons, app_id);
++	if (entry) {
++		return entry->icon ? sway_icon_ref(entry->icon) : NULL;
++	}
++
++	struct sway_icon *icon = NULL;
++	char *icon_name = desktop_entry_find_icon(app_id);
++	if (icon_name) {
++		if (icon_name[0] == '/') {
++			icon = icon_from_path(icon_name);
++		} else {
++			icon = sway_icon_from_name(icon_name);
++		}
++		free(icon_name);
++	}
++
++	// Many applications use their app ID as icon name
++	if (!icon) {
++		icon = sway_icon_from_name(app_id);
++	}
++	if (!icon) {
++		char *lower = strdup(app_id);
++		if (lower) {
++			for (char *c = lower; *c; ++c) {
++				*c = tolower((unsigned char)*c);
++			}
++			if (strcmp(lower, app_id) != 0) {
++				icon = sway_icon_from_name(lower);
++			}
++			free(lower);
++		}
++	}
++
++	sway_log(SWAY_DEBUG, "Application '%s' %s", app_id,
++		icon ? "has an icon" : "has no icon");
++	cache_add(&app_icons, app_id, icon);
++	return icon;
++}
++
++void sway_icons_reset(void) {
++	cache_clear(named_icons);
++	cache_clear(app_icons);
++	icon_themes_reset();
++	desktop_entries_reset();
++}
+diff --git a/sway/icon_theme.c b/sway/icon_theme.c
+new file mode 100644
+index 00000000..124409b7
+--- /dev/null
++++ b/sway/icon_theme.c
+@@ -0,0 +1,891 @@
++#include <dirent.h>
++#include <errno.h>
++#include <fcntl.h>
++#include <limits.h>
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/stat.h>
++#include <unistd.h>
++#include "config.h"
++#include "list.h"
++#include "log.h"
++#include "stringop.h"
++#include "sway/desktop_entry.h"
++#include "sway/icon_theme.h"
++
++/*
++ * An implementation of icon lookups following the XDG icon theme specification:
++ * https://specifications.freedesktop.org/icon-theme-spec/latest/
++ *
++ * Probing the file system for every directory of a theme is slow (hicolor
++ * alone has hundreds of directories), so we use the icon-theme.cache files
++ * generated by gtk-update-icon-cache when they're present and up to date. For
++ * the other theme directories, we list their contents once.
++ */
++
++// Flags of icon-theme.cache, also used for our own index
++enum {
++	FLAG_XPM = 1 << 0,
++	FLAG_SVG = 1 << 1,
++	FLAG_PNG = 1 << 2,
++};
++
++enum subdir_type {
++	SUBDIR_FIXED,
++	SUBDIR_SCALABLE,
++	SUBDIR_THRESHOLD,
++};
++
++struct theme_subdir {
++	char *name;
++	int index; // in icon_theme.subdirs
++	enum subdir_type type;
++	int size, min_size, max_size, threshold, scale;
++};
++
++struct index_entry {
++	char *name;
++	int subdir; // index in icon_theme.subdirs
++	uint16_t flags;
++};
++
++// A directory containing (a part of) an icon theme, such as
++// /usr/share/icons/hicolor
++struct theme_location {
++	char *path;
++	bool loaded;
++
++	// The contents of icon-theme.cache, if present and up to date
++	uint8_t *cache;
++	size_t cache_size;
++	uint32_t cache_n_dirs;
++	int *cache_subdirs; // icon_theme.subdirs index of each cache directory
++
++	// Otherwise, the icons found in the directory, sorted by name
++	struct index_entry *index;
++	size_t index_len;
++};
++
++struct icon_theme {
++	char *id; // the name of the theme's directory
++	list_t *inherits; // char *
++	list_t *subdirs; // struct theme_subdir *, in the order of the index file
++	struct theme_subdir **subdirs_by_name;
++	list_t *locations; // struct theme_location *
++};
++
++static list_t *basedirs = NULL; // char *
++static list_t *fallback_dirs = NULL; // char *
++static list_t *themes = NULL; // struct icon_theme *
++static list_t *missing_themes = NULL; // char *
++
++static int cmp_str(const void *item, const void *cmp_to) {
++	return strcmp(item, cmp_to);
++}
++
++static bool is_dir(const char *path) {
++	struct stat st;
++	return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
++}
++
++static void load_basedirs(void) {
++	if (basedirs) {
++		return;
++	}
++	basedirs = create_list();
++	fallback_dirs = create_list();
++
++	const char *home = getenv("HOME");
++	if (home && *home) {
++		list_add(basedirs, format_str("%s/.icons", home));
++	}
++	list_t *data_dirs = xdg_data_dirs();
++	for (int i = 0; i < data_dirs->length; ++i) {
++		list_add(basedirs, format_str("%s/icons", (char *)data_dirs->items[i]));
++	}
++	for (int i = 0; i < basedirs->length; ++i) {
++		list_add(fallback_dirs, strdup(basedirs->items[i]));
++	}
++	for (int i = 0; i < data_dirs->length; ++i) {
++		list_add(fallback_dirs, format_str("%s/pixmaps", (char *)data_dirs->items[i]));
++	}
++	list_free_items_and_destroy(data_dirs);
++}
++
++static void subdir_destroy(struct theme_subdir *subdir) {
++	free(subdir->name);
++	free(subdir);
++}
++
++static void location_destroy(struct theme_location *loc) {
++	free(loc->path);
++	free(loc->cache);
++	free(loc->cache_subdirs);
++	for (size_t i = 0; i < loc->index_len; ++i) {
++		free(loc->index[i].name);
++	}
++	free(loc->index);
++	free(loc);
++}
++
++static void theme_destroy(struct icon_theme *theme) {
++	free(theme->id);
++	if (theme->inherits) {
++		list_free_items_and_destroy(theme->inherits);
++	}
++	if (theme->subdirs) {
++		for (int i = 0; i < theme->subdirs->length; ++i) {
++			subdir_destroy(theme->subdirs->items[i]);
++		}
++		list_free(theme->subdirs);
++	}
++	free(theme->subdirs_by_name);
++	if (theme->locations) {
++		for (int i = 0; i < theme->locations->length; ++i) {
++			location_destroy(theme->locations->items[i]);
++		}
++		list_free(theme->locations);
++	}
++	free(theme);
++}
++
++struct theme_parse_state {
++	bool has_header;
++	list_t *inherits; // char *
++	list_t *directories; // char *
++	list_t *groups; // struct theme_subdir *
++};
++
++static bool handle_theme_key(void *data, const char *group, const char *key,
++		const char *value) {
++	struct theme_parse_state *state = data;
++
++	if (strcmp(group, "Icon Theme") == 0) {
++		state->has_header = true;
++		if (strcmp(key, "Inherits") == 0 && !state->inherits) {
++			state->inherits = split_string(value, ",");
++		} else if (strcmp(key, "Directories") == 0 ||
++				strcmp(key, "ScaledDirectories") == 0) {
++			list_t *directories = split_string(value, ",");
++			list_cat(state->directories, directories);
++			list_free(directories);
++		}
++		return true;
++	}
++
++	struct theme_subdir *subdir = NULL;
++	if (state->groups->length > 0) {
++		subdir = state->groups->items[state->groups->length - 1];
++	}
++	if (!subdir || strcmp(subdir->name, group) != 0) {
++		subdir = calloc(1, sizeof(*subdir));
++		if (!subdir) {
++			return false;
++		}
++		subdir->name = strdup(group);
++		subdir->type = SUBDIR_THRESHOLD;
++		subdir->min_size = subdir->max_size = -1;
++		subdir->threshold = 2;
++		subdir->scale = 1;
++		list_add(state->groups, subdir);
++	}
++
++	if (strcmp(key, "Type") == 0) {
++		if (strcmp(value, "Fixed") == 0) {
++			subdir->type = SUBDIR_FIXED;
++		} else if (strcmp(value, "Scalable") == 0) {
++			subdir->type = SUBDIR_SCALABLE;
++		} else if (strcmp(value, "Threshold") == 0) {
++			subdir->type = SUBDIR_THRESHOLD;
++		}
++		return true;
++	}
++
++	// Limits keep products like Size * Scale far from overflowing
++	int *field = NULL;
++	long max = 16384;
++	if (strcmp(key, "Size") == 0) {
++		field = &subdir->size;
++	} else if (strcmp(key, "MinSize") == 0) {
++		field = &subdir->min_size;
++	} else if (strcmp(key, "MaxSize") == 0) {
++		field = &subdir->max_size;
++	} else if (strcmp(key, "Threshold") == 0) {
++		field = &subdir->threshold;
++	} else if (strcmp(key, "Scale") == 0) {
++		field = &subdir->scale;
++		max = 16;
++	}
++	if (field) {
++		char *end;
++		long n = strtol(value, &end, 10);
++		if (*end == '\0' && n >= 0 && n <= max) {
++			*field = n;
++		}
++	}
++	return true;
++}
++
++static int cmp_subdir_name(const void *a, const void *b) {
++	const struct theme_subdir *const *subdir_a = a;
++	const struct theme_subdir *const *subdir_b = b;
++	return strcmp((*subdir_a)->name, (*subdir_b)->name);
++}
++
++static struct theme_subdir *find_subdir(struct theme_subdir **subdirs,
++		size_t n_subdirs, const char *name) {
++	struct theme_subdir key = { .name = (char *)name };
++	struct theme_subdir *key_ptr = &key;
++	struct theme_subdir **found = bsearch(&key_ptr, subdirs, n_subdirs,
++		sizeof(*subdirs), cmp_subdir_name);
++	return found ? *found : NULL;
++}
++
++static struct icon_theme *parse_theme(const char *path, const char *id) {
++	struct theme_parse_state state = {
++		.directories = create_list(),
++		.groups = create_list(),
++	};
++	struct icon_theme *theme = NULL;
++
++	if (!desktop_file_parse(path, handle_theme_key, &state) ||
++			!state.has_header) {
++		goto out;
++	}
++
++	theme = calloc(1, sizeof(*theme));
++	if (!theme) {
++		goto out;
++	}
++	theme->id = strdup(id);
++	theme->inherits = state.inherits;
++	state.inherits = NULL;
++	theme->subdirs = create_list();
++	theme->locations = create_list();
++
++	// Find the properties of each directory listed in the index
++	size_t n_groups = state.groups->length;
++	struct theme_subdir **groups = (struct theme_subdir **)state.groups->items;
++	qsort(groups, n_groups, sizeof(*groups), cmp_subdir_name);
++	for (int i = 0; i < state.directories->length; ++i) {
++		struct theme_subdir *group =
++			find_subdir(groups, n_groups, state.directories->items[i]);
++		if (!group || group->size <= 0 || group->scale <= 0 || group->index < 0) {
++			continue; // invalid, or listed twice
++		}
++		struct theme_subdir *subdir = malloc(sizeof(*subdir));
++		if (!subdir) {
++			continue;
++		}
++		*subdir = *group;
++		subdir->name = strdup(group->name);
++		subdir->index = theme->subdirs->length;
++		if (subdir->min_size < 0) {
++			subdir->min_size = subdir->size;
++		}
++		if (subdir->max_size < 0) {
++			subdir->max_size = subdir->size;
++		}
++		group->index = -1;
++		list_add(theme->subdirs, subdir);
++	}
++
++	theme->subdirs_by_name = malloc(sizeof(*theme->subdirs_by_name) *
++		(theme->subdirs->length + 1));
++	if (theme->subdirs_by_name) {
++		memcpy(theme->subdirs_by_name, theme->subdirs->items,
++			sizeof(*theme->subdirs_by_name) * theme->subdirs->length);
++		qsort(theme->subdirs_by_name, theme->subdirs->length,
++			sizeof(*theme->subdirs_by_name), cmp_subdir_name);
++	}
++
++out:
++	if (state.inherits) {
++		list_free_items_and_destroy(state.inherits);
++	}
++	list_free_items_and_destroy(state.directories);
++	for (int i = 0; i < state.groups->length; ++i) {
++		subdir_destroy(state.groups->items[i]);
++	}
++	list_free(state.groups);
++	return theme;
++}
++
++static bool is_valid_name(const char *name) {
++	return name && *name && !strchr(name, '/') &&
++		strcmp(name, ".") != 0 && strcmp(name, "..") != 0;
++}
++
++static struct icon_theme *load_theme(const char *id) {
++	struct icon_theme *theme = NULL;
++	for (int i = 0; i < basedirs->length && !theme; ++i) {
++		char *path = format_str("%s/%s/index.theme",
++			(char *)basedirs->items[i], id);
++		if (path) {
++			theme = parse_theme(path, id);
++			free(path);
++		}
++	}
++	if (!theme) {
++		return NULL;
++	}
++
++	// The icons of a theme can be spread over several base directories
++	for (int i = 0; i < basedirs->length; ++i) {
++		char *path = format_str("%s/%s", (char *)basedirs->items[i], id);
++		if (!path || !is_dir(path)) {
++			free(path);
++			continue;
++		}
++		struct theme_location *loc = calloc(1, sizeof(*loc));
++		if (!loc) {
++			free(path);
++			continue;
++		}
++		loc->path = path;
++		list_add(theme->locations, loc);
++	}
++
++	sway_log(SWAY_DEBUG, "Loaded icon theme '%s' (%d directories, %d locations)",
++		id, theme->subdirs->length, theme->locations->length);
++	return theme;
++}
++
++static struct icon_theme *get_theme(const char *id) {
++	if (!is_valid_name(id)) {
++		return NULL;
++	}
++	for (int i = 0; i < themes->length; ++i) {
++		struct icon_theme *theme = themes->items[i];
++		if (strcmp(theme->id, id) == 0) {
++			return theme;
++		}
++	}
++	if (list_seq_find(missing_themes, cmp_str, id) != -1) {
++		return NULL;
++	}
++
++	struct icon_theme *theme = load_theme(id);
++	if (theme) {
++		list_add(themes, theme);
++	} else {
++		sway_log(SWAY_INFO, "Icon theme '%s' not found", id);
++		list_add(missing_themes, strdup(id));
++	}
++	return theme;
++}
++
++/*
++ * icon-theme.cache files
++ *
++ * All numbers are big-endian. The header contains the version (two 16-bit
++ * numbers, 1 and 0), the offset of the hash table and the offset of the
++ * directory list. The directory list is a count followed by string offsets.
++ * The hash table is a bucket count followed by the offsets of the first icon
++ * in each bucket. An icon is the offset of the next icon in the chain (or
++ * 0xffffffff), the offset of its name and the offset of its image list. An
++ * image list is a count followed by images: a 16-bit directory index, 16-bit
++ * flags and the offset of optional image data.
++ */
++
++static bool cache_u32(struct theme_location *loc, uint64_t offset,
++		uint32_t *out) {
++	if (offset + 4 > loc->cache_size) {
++		return false;
++	}
++	const uint8_t *p = loc->cache + offset;
++	*out = (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 |
++		(uint32_t)p[2] << 8 | (uint32_t)p[3];
++	return true;
++}
++
++static bool cache_u16(struct theme_location *loc, uint64_t offset,
++		uint16_t *out) {
++	if (offset + 2 > loc->cache_size) {
++		return false;
++	}
++	const uint8_t *p = loc->cache + offset;
++	*out = (uint16_t)(p[0] << 8 | p[1]);
++	return true;
++}
++
++static const char *cache_str(struct theme_location *loc, uint64_t offset) {
++	if (offset >= loc->cache_size) {
++		return NULL;
++	}
++	const char *str = (const char *)loc->cache + offset;
++	return memchr(str, '\0', loc->cache_size - offset) ? str : NULL;
++}
++
++static uint32_t cache_hash(const char *name) {
++	// The hash function used by GTK
++	const signed char *p = (const signed char *)name;
++	uint32_t hash = *p;
++	if (hash) {
++		for (p += 1; *p != '\0'; ++p) {
++			hash = (hash << 5) - hash + *p;
++		}
++	}
++	return hash;
++}
++
++static bool read_file(int fd, uint8_t *data, size_t size) {
++	size_t done = 0;
++	while (done < size) {
++		ssize_t n = read(fd, data + done, size - done);
++		if (n < 0 && errno == EINTR) {
++			continue;
++		}
++		if (n <= 0) {
++			return false;
++		}
++		done += n;
++	}
++	return true;
++}
++
++static bool location_load_cache(struct icon_theme *theme,
++		struct theme_location *loc) {
++	char *path = format_str("%s/icon-theme.cache", loc->path);
++	if (!path) {
++		return false;
++	}
++	struct stat cache_st, dir_st;
++	int fd = open_regular_file(path, 64 * 1024 * 1024, &cache_st);
++	free(path);
++	if (fd < 0) {
++		return false;
++	}
++
++	// Like GTK, ignore caches older than the theme directory
++	if (stat(loc->path, &dir_st) != 0 || cache_st.st_mtime < dir_st.st_mtime ||
++			cache_st.st_size < 12) {
++		close(fd);
++		return false;
++	}
++
++	loc->cache_size = cache_st.st_size;
++	loc->cache = malloc(loc->cache_size);
++	bool ok = loc->cache && read_file(fd, loc->cache, loc->cache_size);
++	close(fd);
++
++	uint16_t major, minor;
++	uint32_t dir_list_offset, n_dirs;
++	ok = ok && cache_u16(loc, 0, &major) && cache_u16(loc, 2, &minor) &&
++		major == 1 && minor == 0 &&
++		cache_u32(loc, 8, &dir_list_offset) &&
++		cache_u32(loc, dir_list_offset, &n_dirs) && n_dirs <= UINT16_MAX + 1;
++	if (ok) {
++		loc->cache_subdirs = calloc(n_dirs + 1, sizeof(*loc->cache_subdirs));
++		ok = loc->cache_subdirs != NULL;
++	}
++	for (uint32_t i = 0; ok && i < n_dirs; ++i) {
++		uint32_t offset;
++		const char *name = NULL;
++		ok = cache_u32(loc, (uint64_t)dir_list_offset + 4 + 4 * (uint64_t)i,
++				&offset) && (name = cache_str(loc, offset));
++		if (ok) {
++			// Directories which aren't listed in index.theme are ignored
++			struct theme_subdir *subdir = theme->subdirs_by_name ?
++				find_subdir(theme->subdirs_by_name, theme->subdirs->length,
++					name) : NULL;
++			loc->cache_subdirs[i] = subdir ? subdir->index : -1;
++		}
++	}
++
++	if (!ok) {
++		sway_log(SWAY_DEBUG, "Ignoring invalid icon cache in %s", loc->path);
++		free(loc->cache);
++		free(loc->cache_subdirs);
++		loc->cache = NULL;
++		loc->cache_subdirs = NULL;
++		loc->cache_size = 0;
++		return false;
++	}
++	loc->cache_n_dirs = n_dirs;
++	return true;
++}
++
++static int cmp_index_entry(const void *a, const void *b) {
++	const struct index_entry *entry_a = a;
++	const struct index_entry *entry_b = b;
++	int cmp = strcmp(entry_a->name, entry_b->name);
++	if (cmp != 0) {
++		return cmp;
++	}
++	return entry_a->subdir - entry_b->subdir;
++}
++
++static void location_build_index(struct icon_theme *theme,
++		struct theme_location *loc) {
++	size_t capacity = 0;
++	for (int i = 0; i < theme->subdirs->length; ++i) {
++		struct theme_subdir *subdir = theme->subdirs->items[i];
++		char *path = format_str("%s/%s", loc->path, subdir->name);
++		DIR *dir = path ? opendir(path) : NULL;
++		free(path);
++		if (!dir) {
++			continue;
++		}
++
++		struct dirent *dirent;
++		while ((dirent = readdir(dir))) {
++			const char *name = dirent->d_name;
++			const char *ext = strrchr(name, '.');
++			if (!ext || ext == name) {
++				continue;
++			}
++			uint16_t flags;
++			if (strcmp(ext, ".png") == 0) {
++				flags = FLAG_PNG;
++			} else if (strcmp(ext, ".svg") == 0) {
++				flags = FLAG_SVG;
++			} else if (strcmp(ext, ".xpm") == 0) {
++				flags = FLAG_XPM;
++			} else {
++				continue;
++			}
++
++			if (loc->index_len == capacity) {
++				size_t new_capacity = capacity ? capacity * 2 : 64;
++				struct index_entry *index = realloc(loc->index,
++					new_capacity * sizeof(*index));
++				if (!index) {
++					break;
++				}
++				loc->index = index;
++				capacity = new_capacity;
++			}
++			char *icon_name = strndup(name, ext - name);
++			if (!icon_name) {
++				break;
++			}
++			loc->index[loc->index_len++] = (struct index_entry){
++				.name = icon_name,
++				.subdir = i,
++				.flags = flags,
++			};
++		}
++		closedir(dir);
++	}
++
++	if (loc->index_len > 0) {
++		qsort(loc->index, loc->index_len, sizeof(*loc->index), cmp_index_entry);
++	}
++	sway_log(SWAY_DEBUG, "Indexed %zu icons in %s", loc->index_len, loc->path);
++}
++
++static void location_load(struct icon_theme *theme, struct theme_location *loc) {
++	if (loc->loaded) {
++		return;
++	}
++	loc->loaded = true;
++	if (!location_load_cache(theme, loc)) {
++		location_build_index(theme, loc);
++	}
++}
++
++/*
++ * Lookups
++ *
++ * The specification picks the first icon in a directory matching the size
++ * exactly, and otherwise the icon in the directory with the closest size. We
++ * render icons at arbitrary sizes (the height of the title bar font), so we
++ * use a slightly different order of preference, to avoid blurry upscaling:
++ * 1. a raster image of exactly the right size,
++ * 2. a vector image (from the directory closest in size, preferring the one
++ *    made for the closest size, since themes may give their directories
++ *    overlapping size ranges),
++ * 3. the smallest raster image larger than the requested size,
++ * 4. the largest raster image smaller than the requested size.
++ */
++
++struct icon_search {
++	const char *name;
++	int size;
++
++	bool found;
++	int rank, distance, closeness;
++	struct theme_location *loc;
++	struct theme_subdir *subdir;
++	enum icon_file_format format;
++};
++
++#if HAVE_LIBRSVG
++static int subdir_distance(struct theme_subdir *subdir, int size) {
++	int min, max;
++	switch (subdir->type) {
++	case SUBDIR_FIXED:
++		min = max = subdir->size;
++		break;
++	case SUBDIR_SCALABLE:
++		min = subdir->min_size;
++		max = subdir->max_size;
++		break;
++	case SUBDIR_THRESHOLD:
++	default:
++		min = subdir->size - subdir->threshold;
++		max = subdir->size + subdir->threshold;
++		break;
++	}
++	min *= subdir->scale;
++	max *= subdir->scale;
++	if (size < min) {
++		return min - size;
++	} else if (size > max) {
++		return size - max;
++	}
++	return 0;
++}
++#endif
++
++static void search_offer(struct icon_search *search, struct theme_location *loc,
++		struct theme_subdir *subdir, enum icon_file_format format,
++		int rank, int distance) {
++	// How far the size the image was made for is from the requested size
++	long nominal = (long)subdir->size * subdir->scale;
++	int closeness = labs(nominal - search->size) > INT_MAX ?
++		INT_MAX : (int)labs(nominal - search->size);
++	if (search->found && (rank > search->rank ||
++			(rank == search->rank && (distance > search->distance ||
++			(distance == search->distance && closeness >= search->closeness))))) {
++		return;
++	}
++	search->found = true;
++	search->rank = rank;
++	search->distance = distance;
++	search->closeness = closeness;
++	search->loc = loc;
++	search->subdir = subdir;
++	search->format = format;
++}
++
++static void search_consider(struct icon_search *search,
++		struct icon_theme *theme, struct theme_location *loc, int subdir_index,
++		uint16_t flags) {
++	if (subdir_index < 0 || subdir_index >= theme->subdirs->length) {
++		return;
++	}
++	struct theme_subdir *subdir = theme->subdirs->items[subdir_index];
++
++	if (flags & FLAG_PNG) {
++		int size = subdir->size * subdir->scale;
++		if (size == search->size) {
++			search_offer(search, loc, subdir, ICON_FORMAT_PNG, 0, 0);
++		} else if (size > search->size) {
++			search_offer(search, loc, subdir, ICON_FORMAT_PNG, 2,
++				size - search->size);
++		} else {
++			search_offer(search, loc, subdir, ICON_FORMAT_PNG, 3,
++				search->size - size);
++		}
++	}
++#if HAVE_LIBRSVG
++	if (flags & FLAG_SVG) {
++		search_offer(search, loc, subdir, ICON_FORMAT_SVG, 1,
++			subdir_distance(subdir, search->size));
++	}
++#endif
++}
++
++static void search_cache(struct icon_search *search, struct icon_theme *theme,
++		struct theme_location *loc) {
++	uint32_t hash_offset, n_buckets, offset;
++	if (!cache_u32(loc, 4, &hash_offset) ||
++			!cache_u32(loc, hash_offset, &n_buckets) || n_buckets == 0) {
++		return;
++	}
++	uint32_t bucket = cache_hash(search->name) % n_buckets;
++	if (!cache_u32(loc, (uint64_t)hash_offset + 4 + 4 * (uint64_t)bucket,
++			&offset)) {
++		return;
++	}
++
++	// Limit the length of the chain in case of a corrupt file
++	for (int i = 0; offset != UINT32_MAX && i < 100000; ++i) {
++		uint32_t name_offset, images_offset, n_images;
++		if (!cache_u32(loc, (uint64_t)offset + 4, &name_offset) ||
++				!cache_u32(loc, (uint64_t)offset + 8, &images_offset)) {
++			return;
++		}
++		const char *name = cache_str(loc, name_offset);
++		if (name && strcmp(name, search->name) == 0) {
++			if (!cache_u32(loc, images_offset, &n_images)) {
++				return;
++			}
++			for (uint32_t j = 0; j < n_images; ++j) {
++				uint64_t image = (uint64_t)images_offset + 4 + 8 * (uint64_t)j;
++				uint16_t dir, flags;
++				if (!cache_u16(loc, image, &dir) ||
++						!cache_u16(loc, image + 2, &flags)) {
++					return;
++				}
++				if (dir < loc->cache_n_dirs) {
++					search_consider(search, theme, loc,
++						loc->cache_subdirs[dir], flags);
++				}
++			}
++			return;
++		}
++		if (!cache_u32(loc, offset, &offset)) {
++			return;
++		}
++	}
++}
++
++static void search_index(struct icon_search *search, struct icon_theme *theme,
++		struct theme_location *loc) {
++	if (loc->index_len == 0) {
++		return;
++	}
++	// Find the first entry with the name
++	size_t lo = 0, hi = loc->index_len;
++	while (lo < hi) {
++		size_t mid = lo + (hi - lo) / 2;
++		if (strcmp(loc->index[mid].name, search->name) < 0) {
++			lo = mid + 1;
++		} else {
++			hi = mid;
++		}
++	}
++	for (size_t i = lo; i < loc->index_len &&
++			strcmp(loc->index[i].name, search->name) == 0; ++i) {
++		search_consider(search, theme, loc, loc->index[i].subdir,
++			loc->index[i].flags);
++	}
++}
++
++static bool search_theme(struct icon_search *search, struct icon_theme *theme) {
++	for (int i = 0; i < theme->locations->length; ++i) {
++		struct theme_location *loc = theme->locations->items[i];
++		location_load(theme, loc);
++		if (loc->cache) {
++			search_cache(search, theme, loc);
++		} else {
++			search_index(search, theme, loc);
++		}
++	}
++	return search->found;
++}
++
++static bool search_theme_tree(struct icon_search *search, const char *id,
++		list_t *visited, int depth) {
++	if (depth > 16 || list_seq_find(visited, cmp_str, id) != -1) {
++		return false;
++	}
++	list_add(visited, strdup(id));
++
++	struct icon_theme *theme = get_theme(id);
++	if (!theme) {
++		return false;
++	}
++	if (search_theme(search, theme)) {
++		return true;
++	}
++	if (theme->inherits) {
++		for (int i = 0; i < theme->inherits->length; ++i) {
++			if (search_theme_tree(search, theme->inherits->items[i], visited,
++					depth + 1)) {
++				return true;
++			}
++		}
++	}
++	return false;
++}
++
++static bool find_fallback(const char *name, struct icon_file *file) {
++	static const struct {
++		const char *ext;
++		enum icon_file_format format;
++	} formats[] = {
++#if HAVE_LIBRSVG
++		{ "svg", ICON_FORMAT_SVG },
++#endif
++		{ "png", ICON_FORMAT_PNG },
++	};
++
++	for (int i = 0; i < fallback_dirs->length; ++i) {
++		for (size_t j = 0; j < sizeof(formats) / sizeof(formats[0]); ++j) {
++			char *path = format_str("%s/%s.%s",
++				(char *)fallback_dirs->items[i], name, formats[j].ext);
++			if (path && access(path, R_OK) == 0) {
++				file->path = path;
++				file->format = formats[j].format;
++				file->size = 0;
++				return true;
++			}
++			free(path);
++		}
++	}
++	return false;
++}
++
++bool icon_theme_find(const char *theme, const char *name, int size,
++		struct icon_file *file) {
++	*file = (struct icon_file){0};
++	if (!is_valid_name(name) || size <= 0) {
++		return false;
++	}
++
++	load_basedirs();
++	if (!themes) {
++		themes = create_list();
++		missing_themes = create_list();
++	}
++
++	struct icon_search search = {
++		.name = name,
++		.size = size,
++	};
++	list_t *visited = create_list();
++	bool found = (theme && search_theme_tree(&search, theme, visited, 0)) ||
++		search_theme_tree(&search, "hicolor", visited, 0);
++	list_free_items_and_destroy(visited);
++
++	if (found) {
++		file->path = format_str("%s/%s/%s.%s", search.loc->path,
++			search.subdir->name, name,
++			search.format == ICON_FORMAT_SVG ? "svg" : "png");
++		file->format = search.format;
++		file->size = search.format == ICON_FORMAT_PNG ?
++			search.subdir->size * search.subdir->scale : 0;
++	} else {
++		found = find_fallback(name, file);
++	}
++
++	if (found && file->path) {
++		sway_log(SWAY_DEBUG, "Icon '%s' at %dpx: %s", name, size, file->path);
++		return true;
++	}
++	sway_log(SWAY_DEBUG, "Icon '%s' not found", name);
++	icon_file_finish(file);
++	return false;
++}
++
++void icon_file_finish(struct icon_file *file) {
++	free(file->path);
++	file->path = NULL;
++}
++
++void icon_themes_reset(void) {
++	if (themes) {
++		for (int i = 0; i < themes->length; ++i) {
++			theme_destroy(themes->items[i]);
++		}
++		list_free(themes);
++		themes = NULL;
++	}
++	if (missing_themes) {
++		list_free_items_and_destroy(missing_themes);
++		missing_themes = NULL;
++	}
++	if (basedirs) {
++		list_free_items_and_destroy(basedirs);
++		basedirs = NULL;
++	}
++	if (fallback_dirs) {
++		list_free_items_and_destroy(fallback_dirs);
++		fallback_dirs = NULL;
++	}
++}
+diff --git a/sway/ipc-json.c b/sway/ipc-json.c
+index 3b69ad38..10a787c9 100644
+--- a/sway/ipc-json.c
++++ b/sway/ipc-json.c
+@@ -741,6 +741,11 @@ static void ipc_json_describe_container(struct sway_container *c, json_object *o
+ 	json_object_object_add(object, "scratchpad_state",
+ 			json_object_new_string(!c->scratchpad ? "none" : "fresh"));
+ 
++	// Same as i3: -1 if the icon isn't shown
++	json_object_object_add(object, "window_icon_padding",
++			json_object_new_int(c->title_window_icon ?
++				c->title_window_icon_padding : -1));
++
+ 	struct sway_node *parent = node_get_parent(&c->node);
+ 	struct wlr_box parent_box = {0, 0, 0, 0};
+ 
+diff --git a/sway/meson.build b/sway/meson.build
+index cb03a4d2..645c2f68 100644
+--- a/sway/meson.build
++++ b/sway/meson.build
+@@ -3,6 +3,9 @@ sway_sources = files(
+ 	'config.c',
+ 	'criteria.c',
+ 	'decoration.c',
++	'desktop_entry.c',
++	'icon.c',
++	'icon_theme.c',
+ 	'ipc-json.c',
+ 	'ipc-server.c',
+ 	'lock.c',
+@@ -10,6 +13,7 @@ sway_sources = files(
+ 	'realtime.c',
+ 	'scene_descriptor.c',
+ 	'server.c',
++	'sway_icon_node.c',
+ 	'sway_text_node.c',
+ 	'swaynag.c',
+ 	'xdg_activation_v1.c',
+@@ -116,6 +120,8 @@ sway_sources = files(
+ 	'commands/tiling_drag_threshold.c',
+ 	'commands/title_align.c',
+ 	'commands/title_format.c',
++	'commands/title_window_icon.c',
++	'commands/title_window_icon_theme.c',
+ 	'commands/titlebar_border_thickness.c',
+ 	'commands/titlebar_padding.c',
+ 	'commands/unmark.c',
+@@ -224,6 +230,7 @@ sway_deps = [
+ 	jsonc,
+ 	libevdev,
+ 	libinput,
++	librsvg,
+ 	libudev,
+ 	math,
+ 	pango,
+@@ -235,6 +242,7 @@ sway_deps = [
+ 	xkbcommon,
+ 	xcb,
+ 	xcb_icccm,
++	xcb_ewmh,
+ ]
+ 
+ if wlroots_features['xwayland']
+diff --git a/sway/server.c b/sway/server.c
+index 8fe79c06..d9a82c87 100644
+--- a/sway/server.c
++++ b/sway/server.c
+@@ -51,6 +51,7 @@
+ #include <wlr/types/wlr_xdg_foreign_v1.h>
+ #include <wlr/types/wlr_xdg_foreign_v2.h>
+ #include <wlr/types/wlr_xdg_output_v1.h>
++#include <wlr/types/wlr_xdg_toplevel_icon_v1.h>
+ #include <wlr/types/wlr_xdg_toplevel_tag_v1.h>
+ #include <xf86drm.h>
+ #include "config.h"
+@@ -58,6 +59,7 @@
+ #include "log.h"
+ #include "sway/config.h"
+ #include "sway/desktop/idle_inhibit_v1.h"
++#include "sway/icon.h"
+ #include "sway/input/input-manager.h"
+ #include "sway/output.h"
+ #include "sway/server.h"
+@@ -613,6 +615,17 @@ bool server_init(struct sway_server *server) {
+ 	wl_signal_add(&xdg_toplevel_tag_manager_v1->events.set_tag,
+ 		&server->xdg_toplevel_tag_manager_v1_set_tag);
+ 
++	server->xdg_toplevel_icon_manager_v1 =
++		wlr_xdg_toplevel_icon_manager_v1_create(server->wl_display, 1);
++	if (!server->xdg_toplevel_icon_manager_v1) {
++		sway_log(SWAY_ERROR, "Failed to create XDG toplevel icon manager");
++		return false;
++	}
++	server->xdg_toplevel_icon_manager_v1_set_icon.notify =
++		xdg_toplevel_icon_manager_v1_handle_set_icon;
++	wl_signal_add(&server->xdg_toplevel_icon_manager_v1->events.set_icon,
++		&server->xdg_toplevel_icon_manager_v1_set_icon);
++
+ 	struct wlr_cursor_shape_manager_v1 *cursor_shape_manager =
+ 		wlr_cursor_shape_manager_v1_create(server->wl_display, 2);
+ 	if (!cursor_shape_manager) {
+@@ -734,6 +747,7 @@ void server_fini(struct sway_server *server) {
+ 	wl_list_remove(&server->xdg_activation_v1_request_activate.link);
+ 	wl_list_remove(&server->xdg_activation_v1_new_token.link);
+ 	wl_list_remove(&server->xdg_toplevel_tag_manager_v1_set_tag.link);
++	wl_list_remove(&server->xdg_toplevel_icon_manager_v1_set_icon.link);
+ 	wl_list_remove(&server->request_set_cursor_shape.link);
+ 	wl_list_remove(&server->new_foreign_toplevel_capture_request.link);
+ 	wl_list_remove(&server->workspace_manager_v1_commit.link);
+@@ -752,6 +766,7 @@ void server_fini(struct sway_server *server) {
+ 	wl_display_destroy(server->wl_display);
+ 	list_free(server->dirty_nodes);
+ 	free(server->socket);
++	sway_icons_reset();
+ }
+ 
+ bool server_start(struct sway_server *server) {
+diff --git a/sway/sway-ipc.7.scd b/sway/sway-ipc.7.scd
+index 70c83137..23f53dbd 100644
+--- a/sway/sway-ipc.7.scd
++++ b/sway/sway-ipc.7.scd
+@@ -385,6 +385,11 @@ node and will have the following properties:
+ |- scratchpad_state
+ :  string
+ :  Whether the window is in the scratchpad. Can be either "none" or "fresh"
++|- window_icon_padding
++:  integer
++:  (Only containers and windows) The padding around the window icon in the
++   title bar (see *title_window_icon* in *sway*(5)), or -1 if the icon is
++   not shown
+ |- app_id
+ :  string
+ :  (Only windows) For an xdg-shell window, the name of the application, if set.
+diff --git a/sway/sway.5.scd b/sway/sway.5.scd
+index 952d243d..a318aeee 100644
+--- a/sway/sway.5.scd
++++ b/sway/sway.5.scd
+@@ -410,6 +410,26 @@ set|plus|minus|toggle <amount>
+ 
+ 	The default format is "%title".
+ 
++*title_window_icon* yes|no|toggle++
++*title_window_icon* padding|toggle <px>[px]
++	Shows or hides the icon of the window in its title bar, next to the
++	title: on its left, or on its right if the title is right-aligned (see
++	*title_align*). With _padding_, the icon is shown with the given
++	horizontal padding on both sides, in pixels. _yes_ resets the padding to
++	0, while _toggle_ keeps it unless a new one is given. The icon is as tall
++	as the title font. By default, icons are not shown.
++
++	The icon is the one set by the application, with the xdg-toplevel-icon-v1
++	protocol or the \_NET_WM_ICON property of X11 windows. Otherwise, it is
++	the icon of the application's desktop entry, matched by app ID, sandbox
++	app ID or X11 class, or else the icon named after the app ID. Icons are
++	looked up in the icon theme set with *title_window_icon_theme*, and can be
++	PNG or SVG images.
++
++	This command is typically used with *for_window* criteria. For example:
++
++		for_window [all] title_window_icon padding 2px
++
+ ## Config or runtime commands
+ The following commands may be used either in the configuration file or at
+ runtime.
+@@ -897,6 +917,14 @@ The default colors are:
+ 	to _yes_, the marks will be shown on the _left_ side instead of the
+ 	_right_ side.
+ 
++*title_window_icon_theme* <name>
++	Sets the icon theme of the window icons shown in title bars (see
++	*title_window_icon*), by the name of its directory, for instance
++	_Papirus-Dark_. Icons which are not part of the theme or of the themes it
++	inherits from are looked up in the _hicolor_ theme, which is the only one
++	used by default. Icon themes and desktop entries are read again when the
++	configuration is reloaded.
++
+ *unbindswitch* <switch>:<state>
+ 	Removes a binding for when <switch> changes to <state>.
+ 
+diff --git a/sway/sway_icon_node.c b/sway/sway_icon_node.c
+new file mode 100644
+index 00000000..317bb986
+--- /dev/null
++++ b/sway/sway_icon_node.c
+@@ -0,0 +1,100 @@
++#include <math.h>
++#include <stdlib.h>
++#include <wlr/types/wlr_buffer.h>
++#include <wlr/types/wlr_output.h>
++#include "sway/icon.h"
++#include "sway/sway_icon_node.h"
++
++struct icon_node {
++	struct sway_icon_node props;
++
++	struct wlr_scene_buffer *buffer_node;
++	struct sway_icon *icon;
++	float scale; // 0 until the node is shown on an output
++
++	struct wl_listener outputs_update;
++	struct wl_listener destroy;
++};
++
++static void icon_node_update(struct icon_node *node) {
++	if (node->scale <= 0) {
++		return;
++	}
++	struct wlr_buffer *buffer = NULL;
++	if (node->icon) {
++		buffer = sway_icon_get_buffer(node->icon,
++			ceil(node->props.size * node->scale));
++	}
++	wlr_scene_buffer_set_buffer(node->buffer_node, buffer);
++}
++
++static void handle_outputs_update(struct wl_listener *listener, void *data) {
++	struct icon_node *node = wl_container_of(listener, node, outputs_update);
++	struct wlr_scene_outputs_update_event *event = data;
++
++	float scale = 0;
++	for (size_t i = 0; i < event->size; i++) {
++		scale = fmax(scale, event->active[i]->output->scale);
++	}
++
++	// Keep the current buffer while the node isn't shown anywhere
++	if (scale > 0 && scale != node->scale) {
++		node->scale = scale;
++		icon_node_update(node);
++	}
++}
++
++static void handle_destroy(struct wl_listener *listener, void *data) {
++	struct icon_node *node = wl_container_of(listener, node, destroy);
++	wl_list_remove(&node->outputs_update.link);
++	wl_list_remove(&node->destroy.link);
++	sway_icon_unref(node->icon);
++	free(node);
++}
++
++struct sway_icon_node *sway_icon_node_create(struct wlr_scene_tree *parent,
++		struct sway_icon *icon, int size) {
++	struct icon_node *node = calloc(1, sizeof(*node));
++	if (!node) {
++		return NULL;
++	}
++
++	struct wlr_scene_buffer *buffer_node = wlr_scene_buffer_create(parent, NULL);
++	if (!buffer_node) {
++		free(node);
++		return NULL;
++	}
++
++	node->buffer_node = buffer_node;
++	node->props.node = &buffer_node->node;
++	node->props.size = size;
++	node->icon = icon ? sway_icon_ref(icon) : NULL;
++
++	node->destroy.notify = handle_destroy;
++	wl_signal_add(&buffer_node->node.events.destroy, &node->destroy);
++	node->outputs_update.notify = handle_outputs_update;
++	wl_signal_add(&buffer_node->events.outputs_update, &node->outputs_update);
++
++	wlr_scene_buffer_set_dest_size(buffer_node, size, size);
++	return &node->props;
++}
++
++void sway_icon_node_set_icon(struct sway_icon_node *props, struct sway_icon *icon) {
++	struct icon_node *node = wl_container_of(props, node, props);
++	if (node->icon == icon) {
++		return;
++	}
++	sway_icon_unref(node->icon);
++	node->icon = icon ? sway_icon_ref(icon) : NULL;
++	icon_node_update(node);
++}
++
++void sway_icon_node_set_size(struct sway_icon_node *props, int size) {
++	struct icon_node *node = wl_container_of(props, node, props);
++	if (props->size == size) {
++		return;
++	}
++	props->size = size;
++	wlr_scene_buffer_set_dest_size(node->buffer_node, size, size);
++	icon_node_update(node);
++}
+diff --git a/sway/tree/container.c b/sway/tree/container.c
+index 6880841b..1170787f 100644
+--- a/sway/tree/container.c
++++ b/sway/tree/container.c
+@@ -13,6 +13,7 @@
+ #include "sway/input/seat.h"
+ #include "sway/ipc-server.h"
+ #include "sway/scene_descriptor.h"
++#include "sway/sway_icon_node.h"
+ #include "sway/sway_text_node.h"
+ #include "sway/output.h"
+ #include "sway/server.h"
+@@ -56,6 +57,7 @@ struct sway_container *container_create(struct sway_view *view) {
+ 	//   - title bar
+ 	//     - border
+ 	//     - background
++	//     - icon
+ 	//     - title text
+ 	//     - marks text
+ 	//   - border
+@@ -283,6 +285,39 @@ static void update_rect_list(struct wlr_scene_tree *tree, pixman_region32_t *reg
+ 	}
+ }
+ 
++static struct sway_icon *container_get_title_icon(struct sway_container *con) {
++	if (!con->view || !con->title_window_icon) {
++		return NULL;
++	}
++	return view_get_icon(con->view);
++}
++
++static void container_update_title_icon(struct sway_container *con,
++		struct sway_icon *icon, int x, int y, int size) {
++	if (!icon) {
++		if (con->title_bar.icon) {
++			wlr_scene_node_destroy(con->title_bar.icon->node);
++			con->title_bar.icon = NULL;
++		}
++		return;
++	}
++
++	if (!con->title_bar.icon) {
++		con->title_bar.icon =
++			sway_icon_node_create(con->title_bar.tree, icon, size);
++		if (!con->title_bar.icon) {
++			return;
++		}
++		// The icon goes over the background, but below the text
++		wlr_scene_node_place_above(con->title_bar.icon->node,
++			&con->title_bar.background->node);
++	} else {
++		sway_icon_node_set_icon(con->title_bar.icon, icon);
++		sway_icon_node_set_size(con->title_bar.icon, size);
++	}
++	wlr_scene_node_set_position(con->title_bar.icon->node, x, y);
++}
++
+ void container_arrange_title_bar(struct sway_container *con) {
+ 	enum alignment title_align = config->title_align;
+ 	int marks_buffer_width = 0;
+@@ -292,6 +327,19 @@ void container_arrange_title_bar(struct sway_container *con) {
+ 	pixman_region32_t text_area;
+ 	pixman_region32_init(&text_area);
+ 
++	// The window icon goes next to the title, with its padding on both sides,
++	// and the title bar padding between it and the title
++	struct sway_icon *icon = container_get_title_icon(con);
++	int icon_size = config->font_height;
++	int icon_padding = con->title_window_icon_padding;
++	int icon_width = 0;
++	if (icon && icon_size > 0 && icon_size + 2 * icon_padding <=
++			width - 2 * config->titlebar_h_padding) {
++		icon_width = icon_size + 2 * icon_padding + config->titlebar_h_padding;
++	} else {
++		icon = NULL;
++	}
++
+ 	if (con->title_bar.marks_text) {
+ 		struct sway_text_node *node = con->title_bar.marks_text;
+ 		marks_buffer_width = node->width;
+@@ -303,10 +351,14 @@ void container_arrange_title_bar(struct sway_container *con) {
+ 			h_padding = width - config->titlebar_h_padding - marks_buffer_width;
+ 		}
+ 
+-		h_padding = MAX(h_padding, config->titlebar_h_padding);
++		// When space is short, marks can cover the title, but not the icon
++		// (which is on the left unless the title is right-aligned)
++		int icon_left = title_align == ALIGN_RIGHT ? 0 : icon_width;
++		int icon_right = title_align == ALIGN_RIGHT ? icon_width : 0;
++		h_padding = MAX(h_padding, config->titlebar_h_padding + icon_left);
+ 
+ 		int alloc_width = MIN((int)node->width,
+-			width - h_padding - config->titlebar_h_padding);
++			width - h_padding - config->titlebar_h_padding - icon_right);
+ 		alloc_width = MAX(alloc_width, 0);
+ 
+ 		sway_text_node_set_max_width(node, alloc_width);
+@@ -317,22 +369,37 @@ void container_arrange_title_bar(struct sway_container *con) {
+ 			node->node->x, node->node->y, alloc_width, node->height);
+ 	}
+ 
+-	if (con->title_bar.title_text) {
+-		struct sway_text_node *node = con->title_bar.title_text;
++	// The space taken by the title and the icon
++	int title_width = con->title_bar.title_text ?
++		con->title_bar.title_text->width : 0;
++	int start;
++	if (title_align == ALIGN_RIGHT) {
++		start = width - config->titlebar_h_padding - icon_width - title_width;
++	} else if (title_align == ALIGN_CENTER) {
++		start = ((int)width - marks_buffer_width - icon_width - title_width) >> 1;
++	} else {
++		start = config->titlebar_h_padding;
++	}
++	start = MAX(start, config->titlebar_h_padding);
++	int end = width - config->titlebar_h_padding;
+ 
+-		int h_padding;
+-		if (title_align == ALIGN_RIGHT) {
+-			h_padding = width - config->titlebar_h_padding - node->width;
+-		} else if (title_align == ALIGN_CENTER) {
+-			h_padding = ((int)width - marks_buffer_width - node->width) >> 1;
+-		} else {
+-			h_padding = config->titlebar_h_padding;
+-		}
++	// Like in i3, the icon is on the right of right-aligned titles
++	int h_padding = start;
++	int icon_x;
++	if (title_align == ALIGN_RIGHT) {
++		end -= icon_width;
++		icon_x = end + config->titlebar_h_padding + icon_padding;
++	} else {
++		icon_x = start + icon_padding;
++		h_padding += icon_width;
++	}
++	container_update_title_icon(con, icon, icon_x, (height - icon_size) >> 1,
++		icon_size);
+ 
+-		h_padding = MAX(h_padding, config->titlebar_h_padding);
++	if (con->title_bar.title_text) {
++		struct sway_text_node *node = con->title_bar.title_text;
+ 
+-		int alloc_width = MIN((int) node->width,
+-			width - h_padding - config->titlebar_h_padding);
++		int alloc_width = MIN((int) node->width, end - h_padding);
+ 		alloc_width = MAX(alloc_width, 0);
+ 
+ 		sway_text_node_set_max_width(node, alloc_width);
+diff --git a/sway/tree/view.c b/sway/tree/view.c
+index 83b4972b..aef28428 100644
+--- a/sway/tree/view.c
++++ b/sway/tree/view.c
+@@ -23,6 +23,7 @@
+ #include "sway/desktop/transaction.h"
+ #include "sway/desktop/idle_inhibit_v1.h"
+ #include "sway/desktop/launcher.h"
++#include "sway/icon.h"
+ #include "sway/input/cursor.h"
+ #include "sway/ipc-server.h"
+ #include "sway/output.h"
+@@ -134,6 +135,9 @@ void view_destroy(struct sway_view *view) {
+ 	list_free(view->executed_criteria);
+ 
+ 	view_assign_ctx(view, NULL);
++	free(view->client_icon_name);
++	sway_icon_unref(view->client_icon);
++	sway_icon_unref(view->icon);
+ 	wlr_scene_node_destroy(&view->image_capture_scene->tree.node);
+ 	wlr_scene_node_destroy(&view->scene_tree->node);
+ 	if (view->impl->destroy) {
+@@ -818,6 +822,8 @@ void view_map(struct sway_view *view, struct wlr_surface *wlr_surface,
+ 	view->surface = wlr_surface;
+ 	view_populate_pid(view);
+ 	view->container = container_create(view);
++	// The app_id or class may have changed while the view was unmapped
++	view->icon_resolved = false;
+ 
+ 	if (view->ctx == NULL) {
+ 		struct launcher_ctx *ctx = launcher_ctx_find_pid(view->pid);
+@@ -1100,6 +1106,66 @@ void view_update_app_id(struct sway_view *view) {
+ 	if (view->ext_foreign_toplevel) {
+ 		update_ext_foreign_toplevel(view);
+ 	}
++
++	view_update_icon(view);
++}
++
++static struct sway_icon *view_resolve_icon(struct sway_view *view) {
++	if (view->impl->fetch_client_icon) {
++		view->impl->fetch_client_icon(view);
++	}
++
++	// An icon set by the client takes precedence; an icon name over pixel data
++	struct sway_icon *icon = NULL;
++	if (view->client_icon_name) {
++		icon = sway_icon_from_name(view->client_icon_name);
++	}
++	if (!icon && view->client_icon) {
++		icon = sway_icon_ref(view->client_icon);
++	}
++
++	// Otherwise, use the icon of the application
++	const char *app_ids[] = {
++		view_get_sandbox_app_id(view),
++		view_get_app_id(view),
++		view_get_class(view),
++		view_get_instance(view),
++	};
++	for (size_t i = 0; !icon && i < sizeof(app_ids) / sizeof(app_ids[0]); ++i) {
++		icon = sway_icon_for_app(app_ids[i]);
++	}
++	return icon;
++}
++
++struct sway_icon *view_get_icon(struct sway_view *view) {
++	if (!view->icon_resolved && view->surface) {
++		struct sway_icon *icon = view_resolve_icon(view);
++		sway_icon_unref(view->icon);
++		view->icon = icon;
++		view->icon_resolved = true;
++	}
++	return view->icon;
++}
++
++void view_set_client_icon(struct sway_view *view, const char *name,
++		list_t *images) {
++	free(view->client_icon_name);
++	view->client_icon_name = name ? strdup(name) : NULL;
++
++	sway_icon_unref(view->client_icon);
++	view->client_icon = NULL;
++	if (images && images->length > 0) {
++		view->client_icon = sway_icon_from_images(images);
++	} else if (images) {
++		list_free(images);
++	}
++}
++
++void view_update_icon(struct sway_view *view) {
++	view->icon_resolved = false;
++	if (view->container && view->container->title_window_icon) {
++		container_arrange_title_bar(view->container);
++	}
+ }
+ 
+ void view_update_title(struct sway_view *view, bool force) {
+-- 
+2.56.1
+
